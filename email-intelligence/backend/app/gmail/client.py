@@ -38,6 +38,7 @@ class GmailMessageMetadata:
     bcc_addresses: list[str]
     is_unread: bool
     internal_date: datetime
+    label_ids: list[str]
 
 
 def get_gmail_service_from_files(
@@ -46,6 +47,7 @@ def get_gmail_service_from_files(
     token_path: str,
     scopes: list[str] | None = None,
     auth_mode: str = "local_server",
+    allow_interactive: bool = True,
 ):
     """Create a Gmail API service using local OAuth files.
 
@@ -66,6 +68,12 @@ def get_gmail_service_from_files(
         creds.refresh(Request())
 
     if not creds or not creds.valid:
+        if not allow_interactive:
+            raise RuntimeError(
+                "Gmail OAuth token is missing/invalid and interactive auth is disabled. "
+                "Run an ingestion job once to complete OAuth and create token.json."
+            )
+
         # Interactive local auth flow (creates/updates token file)
         flow = InstalledAppFlow.from_client_secrets_file(credentials_path, scopes=scopes)
         if auth_mode not in {"local_server", "console"}:
@@ -184,6 +192,7 @@ def get_message_metadata(
         bcc_addresses=bcc_list,
         is_unread=is_unread,
         internal_date=internal_dt,
+        label_ids=list(label_ids),
     )
 
 
@@ -237,3 +246,22 @@ def get_message_body_text(
     # Fallback: Gmail's snippet is short but better than nothing.
     snippet = (msg.get("snippet") or "").strip()
     return snippet[:max_chars]
+
+
+def list_label_names(service, *, user_id: str = "me") -> dict[str, str]:
+    """Return a mapping of Gmail label id -> label name.
+
+    Gmail message metadata includes label IDs. To show "folders" in the UI, we need the
+    human-friendly label names.
+    """
+
+    resp = service.users().labels().list(userId=user_id).execute()
+    labels = resp.get("labels", []) or []
+
+    out: dict[str, str] = {}
+    for l in labels:
+        lid = l.get("id")
+        name = l.get("name")
+        if lid and name:
+            out[str(lid)] = str(name)
+    return out

@@ -1,5 +1,12 @@
 import type { MouseEvent } from "react";
 import { useMemo, useState } from "react";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import Box from "@mui/material/Box";
+import ButtonBase from "@mui/material/ButtonBase";
+import Chip from "@mui/material/Chip";
+import IconButton from "@mui/material/IconButton";
+import Typography from "@mui/material/Typography";
 import type { DashboardNode } from "../api/types";
 
 type ColorForNode = (n: DashboardNode) => string;
@@ -17,15 +24,16 @@ export default function HierarchyTree(props: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([props.root.id]));
 
   const flattened = useMemo(() => {
-    const rows: Array<{ node: DashboardNode; depth: number }> = [];
+    const rows: Array<{ node: DashboardNode; depth: number; isPending: boolean }> = [];
 
-    function walk(node: DashboardNode, depth: number) {
-      rows.push({ node, depth });
+    function walk(node: DashboardNode, depth: number, parentPending: boolean) {
+      const isPending = parentPending || node.name === "Pending labelling";
+      rows.push({ node, depth, isPending });
       if (!expanded.has(node.id)) return;
-      for (const child of node.children ?? []) walk(child, depth + 1);
+      for (const child of node.children ?? []) walk(child, depth + 1, isPending);
     }
 
-    walk(props.root, 0);
+    walk(props.root, 0, false);
     return rows;
   }, [props.root, expanded]);
 
@@ -39,78 +47,86 @@ export default function HierarchyTree(props: Props) {
   }
 
   return (
-    <div style={{ marginTop: 10 }}>
-      {flattened.map(({ node, depth }: { node: DashboardNode; depth: number }) => {
+    <Box sx={{ mt: 1.25 }}>
+      {flattened.map(
+        ({ node, depth, isPending }: { node: DashboardNode; depth: number; isPending: boolean }) => {
         const isSelected = node.id === props.selectedId;
         const hasChildren = (node.children?.length ?? 0) > 0;
         const isExpanded = expanded.has(node.id);
-        const color = props.colorForNode(node);
-        const subtitle = props.subtitleForNode?.(node);
-        const badge = props.badgeForNode?.(node);
+
+        // The "Pending labelling" branch is unprocessed: unread ratio is informative, but
+        // it's misleading to treat it as a usefulness/value proxy.
+        const color = isPending ? "#9ca3af" : props.colorForNode(node);
+        const subtitle = isPending ? "Unknown" : props.subtitleForNode?.(node);
+        const badge = isPending ? "Pending" : props.badgeForNode?.(node);
 
         return (
-          <div
+          <ButtonBase
             key={node.id}
-            style={{
+            onClick={() => props.onSelect(node.id)}
+            sx={{
+              width: "100%",
+              justifyContent: "flex-start",
+              textAlign: "left",
+              borderRadius: 2,
+              px: 0.75,
+              py: 0.75,
+              // IMPORTANT: do NOT indent via margin-left while also setting width: 100%.
+              // That pattern can make the element wider than its container and introduce
+              // a horizontal scrollbar for the whole dashboard.
+              pl: `calc(6px + ${depth * 14}px)`,
               display: "flex",
               alignItems: "center",
-              gap: 8,
-              padding: "6px 6px",
-              marginLeft: depth * 14,
-              borderRadius: 10,
-              background: isSelected ? "#eff6ff" : "transparent",
-              cursor: "pointer",
+              gap: 1,
+              bgcolor: isSelected ? "action.selected" : "transparent",
               userSelect: "none",
             }}
-            onClick={() => props.onSelect(node.id)}
           >
-            <button
+            <IconButton
+              size="small"
               onClick={(e: MouseEvent<HTMLButtonElement>) => {
                 e.stopPropagation();
                 if (hasChildren) toggle(node.id);
               }}
               disabled={!hasChildren}
               aria-label={hasChildren ? (isExpanded ? "Collapse" : "Expand") : "No children"}
-              style={{
-                width: 20,
-                height: 20,
-                borderRadius: 6,
-                border: "1px solid #e5e7eb",
-                background: hasChildren ? "white" : "#f3f4f6",
-                color: "#374151",
-                cursor: hasChildren ? "pointer" : "not-allowed",
-                fontSize: 12,
-                lineHeight: "18px",
+              sx={{
+                width: 28,
+                height: 28,
+                borderRadius: 1.5,
+                border: 1,
+                borderColor: "divider",
               }}
-              title={hasChildren ? (isExpanded ? "Collapse" : "Expand") : "No children"}
             >
-              {hasChildren ? (isExpanded ? "▾" : "▸") : "·"}
-            </button>
+              {hasChildren ? (isExpanded ? <ExpandMoreIcon /> : <ChevronRightIcon />) : <span />}
+            </IconButton>
 
-            <div
-              style={{
+            <Box
+              sx={{
                 width: 10,
                 height: 10,
                 borderRadius: 999,
-                background: color,
-                border: "1px solid rgba(17,24,39,0.15)",
+                bgcolor: color,
+                border: "1px solid",
+                borderColor: "divider",
+                flexShrink: 0,
               }}
               title={subtitle ?? ""}
             />
 
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div
-                style={{
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Box
+                sx={{
                   display: "flex",
                   justifyContent: "space-between",
-                  gap: 8,
+                  gap: 1,
                   alignItems: "baseline",
                 }}
               >
-                <div
-                  style={{
-                    fontWeight: isSelected ? 800 : 650,
-                    color: "#111827",
+                <Typography
+                  variant="body2"
+                  sx={{
+                    fontWeight: isSelected ? 900 : 700,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
@@ -118,45 +134,33 @@ export default function HierarchyTree(props: Props) {
                   title={node.name}
                 >
                   {node.name}
-                </div>
+                </Typography>
 
-                <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
-                  {badge && (
-                    <span
-                      style={{
-                        fontSize: 11,
-                        color: "#6b7280",
-                        background: "#f3f4f6",
-                        padding: "2px 6px",
-                        borderRadius: 999,
-                      }}
-                    >
-                      {badge}
-                    </span>
-                  )}
-                  <span
-                    style={{
-                      fontVariantNumeric: "tabular-nums",
-                      fontSize: 12,
-                      color: "#374151",
-                      background: "#f9fafb",
-                      border: "1px solid #e5e7eb",
-                      padding: "2px 7px",
-                      borderRadius: 999,
-                    }}
+                <Box sx={{ display: "flex", gap: 0.75, alignItems: "center", flexShrink: 0 }}>
+                  {badge && <Chip size="small" label={badge} variant="outlined" />}
+                  <Chip
+                    size="small"
+                    label={node.count}
+                    variant="outlined"
                     title={`${node.count} messages`}
-                  >
-                    {node.count}
-                  </span>
-                </div>
-              </div>
+                    sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 800 }}
+                  />
+                </Box>
+              </Box>
+
               {subtitle && (
-                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 1 }}>{subtitle}</div>
+                <Typography
+                  variant="caption"
+                  sx={{ display: "block", color: "text.secondary", mt: 0.25 }}
+                >
+                  {subtitle}
+                </Typography>
               )}
-            </div>
-          </div>
+            </Box>
+          </ButtonBase>
         );
-      })}
-    </div>
+      }
+      )}
+    </Box>
   );
 }

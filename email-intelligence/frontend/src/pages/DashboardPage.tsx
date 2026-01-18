@@ -1,4 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Typography from "@mui/material/Typography";
 import { api, ApiError } from "../api/client";
 import type { DashboardNode, DashboardTreeResponse } from "../api/types";
 import { usefulnessBandLabel, usefulnessColor } from "../utils/colors";
@@ -16,7 +20,14 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [isLoadingTree, setIsLoadingTree] = useState<boolean>(false);
 
+  const isLoadingTreeRef = useRef<boolean>(false);
+  const lastTreeRefreshAtRef = useRef<number>(0);
+
   const { activeJob, jobStatus, startJob, lastCompletedJobId } = useJobPolling();
+
+  useEffect(() => {
+    isLoadingTreeRef.current = isLoadingTree;
+  }, [isLoadingTree]);
 
   async function loadTree() {
     setIsLoadingTree(true);
@@ -36,6 +47,32 @@ export default function DashboardPage() {
     loadTree();
   }, []);
 
+  // Keep the dashboard totals in sync with job progress.
+  //
+  // Job progress is now delivered via SSE (when available), so the jobStatus can
+  // update multiple times per second. The dashboard tree query is heavier, so we
+  // throttle refreshes but trigger them *in response to jobStatus updates*.
+  useEffect(() => {
+    const running = activeJob?.state === "running" || activeJob?.state === "queued";
+    if (!running) return;
+    if (!jobStatus) return;
+
+    // Avoid doing work when the tab isn't visible.
+    const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+    if (!isVisible) return;
+
+    const now = Date.now();
+    const minIntervalMs = 5000;
+    const elapsed = now - lastTreeRefreshAtRef.current;
+
+    if (elapsed < minIntervalMs) return;
+    if (isLoadingTreeRef.current) return;
+
+    lastTreeRefreshAtRef.current = now;
+    loadTree();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeJob?.state, jobStatus?.updated_at]);
+
   // Refresh tree automatically when a job completes.
   useEffect(() => {
     if (lastCompletedJobId) loadTree();
@@ -43,6 +80,22 @@ export default function DashboardPage() {
   }, [lastCompletedJobId]);
 
   const rootNode: DashboardNode | null = tree?.root ?? null;
+
+  const totalEmailCount = rootNode?.count ?? 0;
+
+  const unprocessedEmailCount = useMemo(() => {
+    if (!rootNode) return 0;
+    // The backend exposes a "Pending labelling" node representing unprocessed messages.
+    // We sum counts across all matches just in case the tree shape changes.
+    let sum = 0;
+    const stack: DashboardNode[] = [rootNode];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      if (cur.name === "Pending labelling") sum += cur.count;
+      for (const c of cur.children ?? []) stack.push(c);
+    }
+    return sum;
+  }, [rootNode]);
 
   const selectedNode: DashboardNode | null = useMemo(() => {
     if (!rootNode) return null;
@@ -55,10 +108,14 @@ export default function DashboardPage() {
     return p ?? [rootNode];
   }, [rootNode, selectedNodeId]);
 
+  const isPendingSelection = useMemo(() => {
+    return breadcrumb.some((b) => b.name === "Pending labelling");
+  }, [breadcrumb]);
+
   const jobDisabled = activeJob?.state === "running" || activeJob?.state === "queued";
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+    <Box sx={{ height: "100vh", display: "flex", flexDirection: "column" }}>
       <TopBar
         title="Email Intelligence"
         jobStatus={jobStatus}
@@ -70,37 +127,34 @@ export default function DashboardPage() {
 
       <SplitLayout
         left={
-          <div style={{ padding: "12px", height: "100%", overflow: "auto" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-              <h2 style={{ margin: 0, fontSize: 14, letterSpacing: 0.3, color: "#374151" }}>
+          <Box sx={{ p: 1.5, height: "100%", overflow: "auto" }}>
+            <Box sx={{ display: "flex", justifyContent: "space-between", gap: 1, alignItems: "center" }}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 800, letterSpacing: 0.3 }}>
                 Hierarchy
-              </h2>
-              <button
+              </Typography>
+              <Button
                 onClick={() => loadTree()}
                 disabled={isLoadingTree}
-                style={{
-                  border: "1px solid #e5e7eb",
-                  background: "white",
-                  padding: "6px 10px",
-                  borderRadius: 8,
-                  cursor: isLoadingTree ? "not-allowed" : "pointer",
-                }}
+                size="small"
+                variant="outlined"
+                sx={{ textTransform: "none", fontWeight: 700 }}
               >
                 Refresh
-              </button>
-            </div>
+              </Button>
+            </Box>
 
             {error && (
-              <div style={{ marginTop: 12, padding: 10, background: "#fee2e2", borderRadius: 8 }}>
-                <div style={{ fontWeight: 600, color: "#991b1b" }}>Error</div>
-                <pre style={{ margin: 0, whiteSpace: "pre-wrap", color: "#7f1d1d" }}>{error}</pre>
-              </div>
+              <Alert severity="error" sx={{ mt: 1.5 }}>
+                <Box component="pre" sx={{ m: 0, whiteSpace: "pre-wrap" }}>
+                  {error}
+                </Box>
+              </Alert>
             )}
 
             {!rootNode && !error && (
-              <div style={{ marginTop: 12, color: "#6b7280" }}>
+              <Typography variant="body2" sx={{ mt: 1.5, color: "text.secondary" }}>
                 No data yet. Run ingestion to begin.
-              </div>
+              </Typography>
             )}
 
             {rootNode && (
@@ -113,22 +167,32 @@ export default function DashboardPage() {
                 subtitleForNode={(n: DashboardNode) => usefulnessBandLabel(n.unread_ratio)}
               />
             )}
-          </div>
+          </Box>
         }
         right={
-          <div style={{ padding: 12, height: "100%", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          <Box
+            sx={{
+              p: 1.5,
+              height: "100%",
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
             <SunburstPanel
               root={selectedNode ?? rootNode}
+              totalEmailCount={totalEmailCount}
+              unprocessedEmailCount={unprocessedEmailCount}
               breadcrumb={breadcrumb}
               onSelectNode={(id: string) => setSelectedNodeId(id)}
               onBackToRoot={() => setSelectedNodeId("root")}
             />
-            <div style={{ marginTop: 10, flex: "0 0 auto" }}>
-              <DetailPanel node={selectedNode ?? rootNode} />
-            </div>
-          </div>
+            <Box sx={{ mt: 1.25, flex: "0 0 auto" }}>
+              <DetailPanel node={selectedNode ?? rootNode} isPending={isPendingSelection} />
+            </Box>
+          </Box>
         }
       />
-    </div>
+    </Box>
   );
 }

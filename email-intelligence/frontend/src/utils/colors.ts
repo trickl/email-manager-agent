@@ -18,7 +18,9 @@ export function usefulnessColor(unreadRatio: number): string {
   const hue = 120 * score; // 0 = red, 120 = green
   const sat = 70;
   const light = 42;
-  return `hsl(${hue} ${sat}% ${light}%)`;
+  // Use the widely supported comma-separated syntax to avoid black fallback
+  // in browsers that don't support the CSS Color 4 space-separated form.
+  return `hsl(${hue}, ${sat}%, ${light}%)`;
 }
 
 export function usefulnessBandLabel(unreadRatio: number): string {

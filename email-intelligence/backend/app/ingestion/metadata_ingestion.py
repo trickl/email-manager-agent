@@ -2,7 +2,7 @@
 
 Ingests all messages across all folders/labels (optionally incremental) and stores:
 - Canonical metadata in Postgres
-- Deterministic vectors in Qdrant
+- Embeddings in Qdrant (via Ollama by default)
 
 Bodies are NOT fetched in this phase.
 """

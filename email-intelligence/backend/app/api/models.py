@@ -49,3 +49,21 @@ class JobStatusResponse(BaseModel):
 
 class CurrentJobResponse(BaseModel):
     active: dict | None = None
+
+
+class EmailMessageSummary(BaseModel):
+    gmail_message_id: str
+    subject: str | None = None
+    from_domain: str
+    internal_date: datetime
+    is_unread: bool
+    category: str | None = None
+    subcategory: str | None = None
+    label_ids: list[str] = []
+    label_names: list[str] = []
+
+
+class MessageSamplesResponse(BaseModel):
+    node_id: str
+    generated_at: datetime
+    messages: list[EmailMessageSummary]

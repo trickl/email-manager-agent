@@ -1,4 +1,7 @@
-import { Link } from "react-router-dom";
+import Box from "@mui/material/Box";
+import Link from "@mui/material/Link";
+import Typography from "@mui/material/Typography";
+import { Link as RouterLink } from "react-router-dom";
 import TopBar from "../ui/TopBar";
 import { useJobPolling } from "../ui/useJobPolling";
 
@@ -7,7 +10,7 @@ export default function SettingsPage() {
   const disabled = activeJob?.state === "running" || activeJob?.state === "queued";
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+    <Box sx={{ height: "100vh", display: "flex", flexDirection: "column" }}>
       <TopBar
         title="Email Intelligence"
         jobStatus={jobStatus}
@@ -16,15 +19,19 @@ export default function SettingsPage() {
         onClusterLabel={() => startJob("cluster_label")}
         disabled={disabled}
       />
-      <div style={{ padding: 16 }}>
-        <h2 style={{ marginTop: 0 }}>Settings</h2>
-        <p style={{ color: "#6b7280" }}>
+      <Box sx={{ p: 2 }}>
+        <Typography variant="h6" sx={{ fontWeight: 900, mb: 0.75 }}>
+          Settings
+        </Typography>
+        <Typography variant="body2" sx={{ color: "text.secondary" }}>
           Placeholder. Taxonomy configuration will live here later.
-        </p>
-        <p>
-          <Link to="/">Back to dashboard</Link>
-        </p>
-      </div>
-    </div>
+        </Typography>
+        <Typography variant="body2" sx={{ mt: 1 }}>
+          <Link component={RouterLink} to="/" underline="hover">
+            Back to dashboard
+          </Link>
+        </Typography>
+      </Box>
+    </Box>
   );
 }

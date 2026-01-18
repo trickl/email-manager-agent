@@ -49,3 +49,21 @@ export interface CurrentJobResponse {
     state: JobState;
   };
 }
+
+export interface EmailMessageSummary {
+  gmail_message_id: string;
+  subject?: string | null;
+  from_domain: string;
+  internal_date: string;
+  is_unread: boolean;
+  category?: string | null;
+  subcategory?: string | null;
+  label_ids: string[];
+  label_names: string[];
+}
+
+export interface MessageSamplesResponse {
+  node_id: string;
+  generated_at: string;
+  messages: EmailMessageSummary[];
+}

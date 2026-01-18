@@ -38,4 +38,5 @@ def metadata_to_domain(meta: GmailMessageMetadata) -> EmailMessage:
         bcc_addresses=meta.bcc_addresses,
         is_unread=meta.is_unread,
         internal_date=meta.internal_date,
+        label_ids=list(meta.label_ids or []),
     )

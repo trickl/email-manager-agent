@@ -60,12 +60,17 @@ def ensure_core_schema(engine) -> None:
             ADD COLUMN IF NOT EXISTS label_version TEXT;
         ALTER TABLE email_message
             ADD COLUMN IF NOT EXISTS cluster_id UUID;
+        ALTER TABLE email_message
+            ADD COLUMN IF NOT EXISTS label_ids TEXT[];
 
         CREATE INDEX IF NOT EXISTS idx_email_category
             ON email_message(category);
 
         CREATE INDEX IF NOT EXISTS idx_email_cluster_id
             ON email_message(cluster_id);
+
+        CREATE INDEX IF NOT EXISTS idx_email_label_ids
+            ON email_message USING GIN(label_ids);
         """
     )
 

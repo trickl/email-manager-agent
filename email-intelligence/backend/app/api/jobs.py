@@ -13,10 +13,16 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+import queue
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Iterator
 
 from fastapi import APIRouter
+from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
+from starlette.responses import StreamingResponse
 
 from app.api.models import CurrentJobResponse, JobCounters, JobProgress, JobStatusResponse
 from app.clustering.pipeline import cluster_and_label
@@ -47,9 +53,95 @@ class _Job:
 _jobs: dict[str, _Job] = {}
 _lock = threading.Lock()
 
+# Simple in-memory pub/sub for pushing job status updates (SSE).
+#
+# This is intentionally lightweight and process-local:
+# - suitable for local/dev and single-process deployments
+# - avoids polling overhead in the browser
+#
+# Note: in multi-worker deployments, clients must reconnect to the same worker
+# to receive updates (sticky sessions) OR we should switch to Redis/pubsub.
+_subscribers: dict[str, set[queue.Queue[str]]] = {}
+_sub_lock = threading.Lock()
+
+
+def _subscribe(job_id: str) -> queue.Queue[str]:
+    q: queue.Queue[str] = queue.Queue(maxsize=25)
+    with _sub_lock:
+        _subscribers.setdefault(job_id, set()).add(q)
+    return q
+
+
+def _unsubscribe(job_id: str, q: queue.Queue[str]) -> None:
+    with _sub_lock:
+        subs = _subscribers.get(job_id)
+        if not subs:
+            return
+        subs.discard(q)
+        if not subs:
+            _subscribers.pop(job_id, None)
+
+
+def _broadcast(job_id: str, payload: str) -> None:
+    # Never block the job runner thread.
+    with _sub_lock:
+        subs = list(_subscribers.get(job_id, set()))
+
+    for q in subs:
+        try:
+            q.put_nowait(payload)
+        except queue.Full:
+            # Drop oldest and retry once.
+            try:
+                _ = q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                q.put_nowait(payload)
+            except queue.Full:
+                # Still full, drop this update.
+                pass
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _format_eta(seconds: float | None) -> str | None:
+    if seconds is None:
+        return None
+    if seconds < 0:
+        return None
+
+    s = int(seconds)
+    if s < 60:
+        return f"~{s}s"
+    if s < 3600:
+        m = max(1, s // 60)
+        return f"~{m}m"
+    h = s // 3600
+    m = (s % 3600) // 60
+    return f"~{h}h {m}m"
+
+
+def _compute_eta_hint(*, started_at: datetime, processed: int, total: int | None) -> str | None:
+    if not total or total <= 0:
+        return None
+    if processed <= 0:
+        return None
+    if processed >= total:
+        return "~0s"
+
+    elapsed = (_now() - started_at).total_seconds()
+    if elapsed <= 0:
+        return None
+
+    rate = processed / elapsed
+    if rate <= 0:
+        return None
+
+    remaining = total - processed
+    return _format_eta(remaining / rate)
 
 
 def _make_job_id(prefix: str) -> str:
@@ -87,7 +179,23 @@ def _set_job(
             job.counters.failed = failed
         if message is not None:
             job.message = message
+
+        # Best-effort ETA based on elapsed time and processed/total.
+        job.eta_hint = _compute_eta_hint(
+            started_at=job.started_at,
+            processed=job.progress_processed,
+            total=job.progress_total,
+        )
         job.updated_at = _now()
+
+        # Push best-effort status update to any SSE subscribers.
+        try:
+            status = _as_response(job)
+            payload = json.dumps(jsonable_encoder(status))
+            _broadcast(job_id, payload)
+        except Exception:
+            # Do not let notification failures affect job execution.
+            pass
 
 
 def _as_response(job: _Job) -> JobStatusResponse:
@@ -130,9 +238,56 @@ def job_status(job_id: str) -> JobStatusResponse:
     with _lock:
         job = _jobs.get(job_id)
     if not job:
-        # Keep it simple for now; UI should handle this as an error.
-        raise KeyError(f"Unknown job_id: {job_id}")
+        # Use a proper HTTP error so clients don't see a 500.
+        raise HTTPException(status_code=404, detail=f"Unknown job_id: {job_id}")
     return _as_response(job)
+
+
+@router.get("/{job_id}/events")
+def job_events(job_id: str):
+    """Stream job status updates via Server-Sent Events (SSE).
+
+    Events:
+      - event: job_status
+        data: <JobStatusResponse JSON>
+
+    Keepalive comments are sent periodically.
+    """
+
+    with _lock:
+        job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Unknown job_id: {job_id}")
+
+    q = _subscribe(job_id)
+
+    def gen() -> Iterator[bytes]:
+        try:
+            # Initial connect comment (helps some proxies establish the stream).
+            yield b": connected\n\n"
+
+            # Emit the current snapshot immediately.
+            try:
+                with _lock:
+                    cur = _jobs.get(job_id)
+                if cur is not None:
+                    payload = json.dumps(jsonable_encoder(_as_response(cur)))
+                    yield f"event: job_status\ndata: {payload}\n\n".encode("utf-8")
+            except Exception:
+                pass
+
+            # Stream subsequent updates.
+            while True:
+                try:
+                    payload = q.get(timeout=15.0)
+                    yield f"event: job_status\ndata: {payload}\n\n".encode("utf-8")
+                except queue.Empty:
+                    # Keepalive
+                    yield b": keep-alive\n\n"
+        finally:
+            _unsubscribe(job_id, q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 def _run_in_thread(job_id: str, fn):

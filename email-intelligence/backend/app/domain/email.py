@@ -20,3 +20,6 @@ class EmailMessage:
 
     is_unread: bool
     internal_date: datetime
+
+    # Gmail label IDs (system + user labels). Used to represent "folders".
+    label_ids: List[str]

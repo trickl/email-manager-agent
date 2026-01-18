@@ -1,134 +1,333 @@
 import { ResponsiveSunburst } from "@nivo/sunburst";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Link from "@mui/material/Link";
+import Paper from "@mui/material/Paper";
+import Typography from "@mui/material/Typography";
 import type { MouseEvent } from "react";
 import type { DashboardNode } from "../api/types";
 import { usefulnessColor } from "../utils/colors";
 
 type SunburstDatum = {
+  /**
+   * Unique identifier used by Nivo/React to key nodes.
+   *
+   * Note: `DashboardNode.id` is not globally unique (e.g. sender:<domain> can appear
+   * in multiple places). We keep that as `id` for selection semantics, and use
+   * this `key` for chart identity.
+   */
+  key: string;
   id: string;
   name: string;
   value: number;
   unread_ratio: number;
   frequency?: string | null;
+  is_pending?: boolean;
   children?: SunburstDatum[];
 };
 
-function toDatum(n: DashboardNode): SunburstDatum {
+function nodeKind(id: string): string {
+  if (!id) return "";
+  if (id === "root") return "root";
+  const idx = id.indexOf(":");
+  return idx === -1 ? id : id.slice(0, idx);
+}
+
+function defaultMaxDepthForRoot(root: DashboardNode): number {
+  // Depth is relative to the `root` passed to the sunburst.
+  // We show full depth (incl. senders) only when the user has drilled into a cluster.
+  const kind = nodeKind(root.id);
+  if (kind === "cluster") return 1; // cluster -> sender
+  if (kind === "sender") return 0;
+  // root/cat/sub: stop at cluster level for performance.
+  return 3; // root -> cat -> sub -> cluster
+}
+
+function toDatum(
+  n: DashboardNode,
+  opts: {
+    parentPending?: boolean;
+    parentKey?: string;
+    depth?: number;
+    maxDepth: number;
+    maxChildren: number;
+  },
+): SunburstDatum {
+  const parentPending = opts.parentPending ?? false;
+  const parentKey = opts.parentKey ?? "";
+  const depth = opts.depth ?? 0;
+
+  const isPending = parentPending || n.name === "Pending labelling";
+  const safeId = n.id.replace(/\//g, "-");
+  const key = parentKey ? `${parentKey}/${safeId}` : safeId;
+
+  const shouldExpand = depth < opts.maxDepth;
+  const rawChildren = (n.children ?? []) as DashboardNode[];
+
+  let children: SunburstDatum[] | undefined = undefined;
+  if (shouldExpand && rawChildren.length > 0) {
+    // Sort children by count descending so the big segments stay visible.
+    const sorted = [...rawChildren].sort((a, b) => (b.count ?? 0) - (a.count ?? 0));
+
+    const head = sorted.slice(0, opts.maxChildren);
+    const tail = sorted.slice(opts.maxChildren);
+
+    children = head.map((c) =>
+      toDatum(c, {
+        parentPending: isPending,
+        parentKey: key,
+        depth: depth + 1,
+        maxDepth: opts.maxDepth,
+        maxChildren: opts.maxChildren,
+      }),
+    );
+
+    if (tail.length > 0) {
+      const tailCount = tail.reduce((sum, c) => sum + (c.count ?? 0), 0);
+      const tailUnread = tail.reduce((sum, c) => sum + (c.unread_ratio ?? 0) * (c.count ?? 0), 0);
+      const tailRatio = tailCount > 0 ? tailUnread / tailCount : 0;
+
+      const otherKey = `${key}/__other__`;
+      const otherLabel = `Other (${tail.length})`;
+
+      children.push({
+        key: otherKey,
+        id: "", // synthetic aggregate: not selectable
+        name: otherLabel,
+        value: Math.max(0, tailCount),
+        unread_ratio: tailRatio,
+        frequency: null,
+        is_pending: isPending,
+        children: undefined,
+      });
+    }
+  }
+
   return {
+    key,
     id: n.id,
     name: n.name,
     value: Math.max(0, n.count),
     unread_ratio: n.unread_ratio,
     frequency: n.frequency ?? null,
-    children: (n.children ?? []).map(toDatum),
+    is_pending: isPending,
+    children,
   };
 }
 
 export default function SunburstPanel(props: {
   root: DashboardNode | null;
+  totalEmailCount: number;
+  unprocessedEmailCount: number;
   breadcrumb: DashboardNode[];
   onSelectNode: (id: string) => void;
   onBackToRoot: () => void;
 }) {
   const root = props.root;
 
-  return (
-    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <h2 style={{ margin: 0, fontSize: 14, letterSpacing: 0.3, color: "#374151" }}>
-          Sunburst
-        </h2>
+  const maxDepth = root ? defaultMaxDepthForRoot(root) : 0;
+  // Hard cap per node to avoid rendering thousands of arcs/labels.
+  // This mostly matters at the sender level.
+  const maxChildren = 120;
 
-        <div style={{ fontSize: 12, color: "#6b7280" }}>
-          <button
+  const nf = new Intl.NumberFormat();
+  const totalText = nf.format(props.totalEmailCount);
+  const unprocessedText = nf.format(props.unprocessedEmailCount);
+
+  const unprocessedPct =
+    props.totalEmailCount > 0 ? (props.unprocessedEmailCount / props.totalEmailCount) * 100 : 0;
+  const showUnprocessedPct = props.totalEmailCount > 0 && unprocessedPct > 5;
+  const unprocessedPctText = `${unprocessedPct.toFixed(1)}%`;
+
+  return (
+    <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <Typography variant="subtitle2" sx={{ fontWeight: 800, letterSpacing: 0.3 }}>
+          Categorisation
+        </Typography>
+
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+          <Button
             onClick={props.onBackToRoot}
-            style={{
-              border: "1px solid #e5e7eb",
-              background: "white",
-              padding: "4px 8px",
-              borderRadius: 10,
-              cursor: "pointer",
-              marginRight: 8,
-            }}
+            size="small"
+            variant="outlined"
+            sx={{ textTransform: "none", fontWeight: 700 }}
           >
             Back to root
-          </button>
-          {props.breadcrumb.map((b, idx) => (
-            <span key={b.id}>
-              {idx > 0 ? " / " : ""}
-              <a
-                href="#"
-                onClick={(e: MouseEvent<HTMLAnchorElement>) => {
-                  e.preventDefault();
-                  props.onSelectNode(b.id);
-                }}
-                style={{ color: "#2563eb", textDecoration: "none" }}
-              >
-                {b.name}
-              </a>
-            </span>
-          ))}
-        </div>
-      </div>
+          </Button>
+          <Typography variant="caption" sx={{ color: "text.secondary" }}>
+            {props.breadcrumb.map((b, idx) => (
+              <span key={b.id}>
+                {idx > 0 ? " / " : ""}
+                <Link
+                  component="button"
+                  type="button"
+                  onClick={(e: MouseEvent) => {
+                    e.preventDefault();
+                    props.onSelectNode(b.id);
+                  }}
+                  underline="hover"
+                  sx={{ fontWeight: 700 }}
+                >
+                  {b.name}
+                </Link>
+              </span>
+            ))}
+          </Typography>
+        </Box>
+      </Box>
 
-      <div
-        style={{
-          marginTop: 10,
+      <Paper
+        variant="outlined"
+        sx={{
+          mt: 1.25,
           flex: 1,
           minHeight: 0,
-          border: "1px solid #e5e7eb",
-          borderRadius: 12,
+          borderRadius: 2,
           overflow: "hidden",
-          background: "white",
+          bgcolor: "background.paper",
+          position: "relative",
         }}
       >
         {!root ? (
-          <div style={{ padding: 12, color: "#6b7280" }}>No data.</div>
+          <Typography variant="body2" sx={{ p: 1.5, color: "text.secondary" }}>
+            No data.
+          </Typography>
         ) : (
-          <ResponsiveSunburst
-            data={toDatum(root)}
-            id="id"
-            value="value"
-            margin={{ top: 10, right: 10, bottom: 10, left: 10 }}
-            cornerRadius={2}
-            borderWidth={1}
-            borderColor={{ from: "color", modifiers: [["darker", 0.8]] }}
-            colors={(d: any) => usefulnessColor((d.data as any).unread_ratio)}
-            childColor={{ from: "color", modifiers: [["brighter", 0.15]] }}
-            enableArcLabels={false}
-            tooltip={({ id, value, data }: any) => {
-              const unreadRatio = (data as any).unread_ratio as number;
-              const unreadPct = Math.round(unreadRatio * 100);
-              const freq = (data as any).frequency as string | null;
-              return (
-                <div
-                  style={{
-                    padding: 10,
-                    background: "white",
-                    border: "1px solid #e5e7eb",
-                    borderRadius: 10,
-                    boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
-                    maxWidth: 360,
-                  }}
-                >
-                  <div style={{ fontWeight: 800, marginBottom: 6 }}>{String(id)}</div>
-                  <div style={{ fontSize: 12, color: "#374151" }}>{value} messages</div>
-                  <div style={{ fontSize: 12, color: "#6b7280" }}>{unreadPct}% unread</div>
-                  {freq && <div style={{ fontSize: 12, color: "#6b7280" }}>freq: {freq}</div>}
-                </div>
-              );
-            }}
-            onClick={(node) => {
-              const id = String(node.id);
-              props.onSelectNode(id);
-            }}
-            transitionMode="pushIn"
-          />
-        )}
-      </div>
+          <>
+            <Box
+              sx={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                pointerEvents: "none",
+              }}
+            >
+              <Paper
+                variant="outlined"
+                sx={{
+                  px: 2,
+                  py: 1.25,
+                  borderRadius: 3,
+                  bgcolor: "background.paper",
+                  textAlign: "center",
+                  boxShadow: 3,
+                  // Avoid forcing horizontal overflow on narrow viewports.
+                  width: "min(260px, 92%)",
+                }}
+              >
+                <Typography variant="overline" sx={{ color: "text.secondary", letterSpacing: 0.7 }}>
+                  Total Emails
+                </Typography>
+                <Typography variant="h5" sx={{ fontWeight: 900, mt: -0.5 }}>
+                  {totalText}
+                </Typography>
 
-      <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-        Tip: click a segment to drill into that node.
-      </div>
-    </div>
+                <Box sx={{ mt: 0.75 }}>
+                  <Typography
+                    variant="overline"
+                    sx={{ color: "text.secondary", letterSpacing: 0.7 }}
+                  >
+                    Unprocessed Emails
+                  </Typography>
+                  <Typography variant="h6" sx={{ fontWeight: 900, mt: -0.5 }}>
+                    {unprocessedText}
+                  </Typography>
+
+                  {showUnprocessedPct && (
+                    <Typography variant="caption" sx={{ display: "block", color: "text.secondary" }}>
+                      {unprocessedPctText} of total
+                    </Typography>
+                  )}
+                </Box>
+              </Paper>
+            </Box>
+
+            <ResponsiveSunburst
+              data={toDatum(root, { maxDepth, maxChildren })}
+              id={(d: any) => String((d as any).key)}
+              value="value"
+              margin={{ top: 10, right: 10, bottom: 10, left: 10 }}
+              cornerRadius={2}
+              borderWidth={1}
+              borderColor={{ from: "color", modifiers: [["darker", 0.8]] }}
+              colors={(d: any) => {
+                const data = d.data as any;
+                if (data?.is_pending) return "#9ca3af";
+                return usefulnessColor(data?.unread_ratio);
+              }}
+              childColor={{ from: "color", modifiers: [["brighter", 0.15]] }}
+              enableArcLabels={false}
+              tooltip={({ id, value, data }: any) => {
+                const unreadRatio = (data as any).unread_ratio as number;
+                const unreadPct = Math.round(unreadRatio * 100);
+                const freq = (data as any).frequency as string | null;
+                const isPending = Boolean((data as any).is_pending);
+                const name = String((data as any).name ?? id);
+                return (
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      p: 1.25,
+                      borderRadius: 2,
+                      boxShadow: 6,
+                      maxWidth: 360,
+                    }}
+                  >
+                    <Typography variant="subtitle2" sx={{ fontWeight: 900, mb: 0.5 }}>
+                      {name}
+                    </Typography>
+                    <Typography
+                      variant="caption"
+                      sx={{ display: "block", color: "text.secondary" }}
+                    >
+                      {value} messages
+                    </Typography>
+                    {isPending ? (
+                      <Typography
+                        variant="caption"
+                        sx={{ display: "block", color: "text.secondary" }}
+                      >
+                        Value: Unknown (pending labelling)
+                      </Typography>
+                    ) : (
+                      <Typography
+                        variant="caption"
+                        sx={{ display: "block", color: "text.secondary" }}
+                      >
+                        {unreadPct}% unread
+                      </Typography>
+                    )}
+                    {freq && (
+                      <Typography
+                        variant="caption"
+                        sx={{ display: "block", color: "text.secondary" }}
+                      >
+                        freq: {freq}
+                      </Typography>
+                    )}
+                  </Paper>
+                );
+              }}
+              onClick={(node) => {
+                // `node.id` is the chart identity (our `SunburstDatum.key`).
+                // For selection semantics we want the original dashboard node id.
+                const id = String((node as any)?.data?.id ?? "");
+                if (!id) return;
+                props.onSelectNode(id);
+              }}
+              transitionMode="pushIn"
+            />
+          </>
+        )}
+      </Paper>
+
+      <Typography variant="caption" sx={{ mt: 1.25, color: "text.secondary" }}>
+        Tip: click a segment to drill into that node. For performance, the chart groups long tails
+        into “Other” and only shows sender-level detail once you drill into a cluster.
+      </Typography>
+    </Box>
   );
 }

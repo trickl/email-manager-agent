@@ -19,4 +19,5 @@ def fake_email() -> EmailMessage:
         bcc_addresses=[],
         is_unread=True,
         internal_date=datetime.utcnow(),
+        label_ids=["INBOX", "UNREAD"],
     )

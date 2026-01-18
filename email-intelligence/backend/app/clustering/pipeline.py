@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import uuid
 
 from app.clustering.analysis import frequency_label, unread_ratio_label
@@ -18,20 +19,72 @@ from app.gmail.client import get_message_body_text
 from app.labeling.labeler import build_labeler
 from app.labeling.tier1 import validate_tier1_category
 from app.repository.email_query_repository import fetch_by_gmail_ids, fetch_next_unlabelled
+from app.repository.email_query_repository import fetch_unlabelled_by_domain
 from app.repository.email_query_repository import insert_cluster
 from app.repository.email_query_repository import label_emails_in_cluster
 from app.repository.email_query_repository import update_cluster_analysis
 from app.repository.email_query_repository import update_cluster_label
+from app.repository.taxonomy_repository import ensure_taxonomy_seeded
+from app.repository.taxonomy_repository import ensure_tier2_label
+from app.repository.taxonomy_repository import list_tier2_options
 from app.repository.pipeline_kv_repository import set_current_phase
 from app.vector.embedding import build_embedding_text
+from app.vector.qdrant import get_vector_for_gmail_message_id
 from app.vector.qdrant import query_similar
 from app.vector.vectorizer import vectorize_text
+from app.vector.vectorizer import vector_version_tag
 from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
 
 PHASE_NAME = "phase2_clustering_labeling"
+
+
+_WORD_RE = re.compile(r"[a-z0-9]+", re.I)
+
+
+def _tokenize_subject(s: str) -> set[str]:
+    if not s:
+        return set()
+
+    tokens = {t.lower() for t in _WORD_RE.findall(s)}
+    stop = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "for",
+        "from",
+        "has",
+        "have",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "re",
+        "the",
+        "to",
+        "your",
+    }
+    return {t for t in tokens if t not in stop and len(t) >= 3}
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    if inter == 0:
+        return 0.0
+    union = len(a | b)
+    if union == 0:
+        return 0.0
+    return inter / union
 
 
 def _cluster_id(*, seed_gmail_message_id: str, similarity_threshold: float, label_version: str) -> str:
@@ -69,6 +122,9 @@ def cluster_and_label(
 ) -> dict[str, int]:
     """Iteratively cluster and label all unlabelled emails."""
 
+    # Ensure taxonomy tables are present before labeling begins.
+    ensure_taxonomy_seeded(engine)
+
     set_current_phase(engine, PHASE_NAME)
     labeler = build_labeler(ollama_host=ollama_host, ollama_model=ollama_model)
 
@@ -93,62 +149,74 @@ def cluster_and_label(
             label_version=label_version,
         )
 
-        # Seed vector is deterministic from canonical metadata.
-        seed_text = build_embedding_text(seed)
-        seed_vector = vectorize_text(seed_text)
+        # Phase 2A: Cluster candidates
+        #
+        # We intentionally batch label many emails per iteration. We first cluster by:
+        #   - same sender domain
+        #   - similar subject tokens (Jaccard overlap)
+        # and only fall back to Qdrant similarity if this produces only the seed.
 
-        # Phase 2A: Similarity search (filtered by sender domain)
-        points = query_similar(
-            seed_vector,
-            from_domain=seed.from_domain,
-            limit=qdrant_limit,
-            score_threshold=similarity_threshold,
-        )
+        domain_rows = fetch_unlabelled_by_domain(engine, from_domain=seed.from_domain, limit=2000)
+        seed_tokens = _tokenize_subject(seed.subject_normalized or seed.subject or "")
 
-        score_by_id: dict[str, float] = {}
-        candidate_ids: list[str] = []
+        cluster_emails = [seed]
+        seen_ids = {seed.gmail_message_id}
 
-        # Always include seed.
-        candidate_ids.append(seed.gmail_message_id)
-        score_by_id[seed.gmail_message_id] = 1.0
+        if seed_tokens:
+            for r in domain_rows:
+                e = r.email
+                if e.gmail_message_id in seen_ids:
+                    continue
 
-        for p in points:
-            payload = getattr(p, "payload", None) or {}
-            mid = payload.get("gmail_message_id")
-            if not mid:
-                continue
-            if mid not in score_by_id:
-                score_by_id[mid] = float(getattr(p, "score", 0.0) or 0.0)
-                candidate_ids.append(mid)
+                et = _tokenize_subject(e.subject_normalized or e.subject or "")
+                if not et:
+                    continue
 
-        rows = fetch_by_gmail_ids(engine, candidate_ids)
+                # Modest threshold because sender-domain is already a strong constraint.
+                # 0.20 is intentionally permissive: we prefer larger, coherent sender+subject clusters
+                # over 1-email clusters when subjects are clearly related.
+                if _jaccard(seed_tokens, et) >= 0.20:
+                    cluster_emails.append(e)
+                    seen_ids.add(e.gmail_message_id)
 
-        # Phase 2A: consolidate cluster candidates.
-        unlabelled_rows = [r for r in rows if r.category is None]
+        if len(cluster_emails) == 1:
+            # Use the stored Qdrant vector (fast) instead of recomputing embeddings per seed.
+            seed_vector = get_vector_for_gmail_message_id(seed.gmail_message_id)
+            if seed_vector is None:
+                # Should be rare after backfill; keep a safe fallback.
+                seed_text = build_embedding_text(seed)
+                seed_vector = vectorize_text(seed_text)
 
-        cluster_ids: list[str] = []
-        for r in unlabelled_rows:
-            e = r.email
-            if e.from_domain != seed.from_domain:
-                continue
+            # Filter to current vector provenance so we don't match against legacy dummy vectors.
+            version = vector_version_tag()
 
-            score = score_by_id.get(e.gmail_message_id, 0.0)
-            same_subject = (
-                seed.subject_normalized
-                and e.subject_normalized
-                and e.subject_normalized == seed.subject_normalized
+            # Similarity search (filtered by sender domain)
+            points = query_similar(
+                seed_vector,
+                from_domain=seed.from_domain,
+                limit=qdrant_limit,
+                score_threshold=similarity_threshold,
+                vector_version=version,
             )
 
-            if same_subject or score >= similarity_threshold:
-                cluster_ids.append(e.gmail_message_id)
+            candidate_ids = [seed.gmail_message_id]
+            for p in points:
+                payload = getattr(p, "payload", None) or {}
+                mid = payload.get("gmail_message_id")
+                if mid and mid not in seen_ids:
+                    candidate_ids.append(mid)
+                    seen_ids.add(mid)
 
-        if not cluster_ids:
-            cluster_ids = [seed.gmail_message_id]
+            rows = fetch_by_gmail_ids(engine, candidate_ids)
+            rows_by_id = {r.email.gmail_message_id: r for r in rows}
+            cluster_emails = [rows_by_id[i].email for i in candidate_ids if i in rows_by_id]
 
         # Deterministic ordering for repeatability.
-        rows_by_id = {r.email.gmail_message_id: r for r in rows}
-        cluster_emails = [rows_by_id[i].email for i in cluster_ids if i in rows_by_id]
         cluster_emails.sort(key=lambda e: (e.internal_date, e.gmail_message_id))
+
+        # Safety cap for large sender domains.
+        if len(cluster_emails) > 500:
+            cluster_emails = cluster_emails[:500]
 
         # Persist cluster identity (idempotent).
         insert_cluster(
@@ -207,6 +275,9 @@ def cluster_and_label(
             if len(subject_examples) >= 5:
                 break
 
+        # Fetch latest Tier-2 options each iteration so prompt stays up-to-date even if we extend.
+        tier2 = list_tier2_options(engine)
+
         result = labeler.label(
             sender_domain=seed.from_domain,
             subject_examples=subject_examples,
@@ -214,9 +285,18 @@ def cluster_and_label(
             frequency_label=freq,
             unread_label=unread,
             bodies=bodies,
+            tier2_options=tier2,
         )
 
         category = validate_tier1_category(result.category)
+
+        # Tier-2 is preferred (not strictly enforced): if the model proposes a new subcategory,
+        # persist it so future prompts always include the latest taxonomy.
+        subcategory = result.subcategory
+        if subcategory is not None:
+            subcategory = str(subcategory).strip() or None
+        if subcategory is not None and subcategory not in set(tier2.get(category, [])):
+            ensure_tier2_label(engine, category_name=category, subcategory_name=subcategory)
 
         # Phase 2C: persist labeling results (never relabel already labelled)
         updated = label_emails_in_cluster(
@@ -224,16 +304,14 @@ def cluster_and_label(
             gmail_ids=[e.gmail_message_id for e in cluster_emails],
             cluster_id=cluster_uuid,
             category=category,
-            subcategory=result.subcategory,
-            label_confidence=result.confidence,
+            subcategory=subcategory,
             label_version=label_version,
         )
         update_cluster_label(
             engine=engine,
             cluster_id=cluster_uuid,
             category=category,
-            subcategory=result.subcategory,
-            label_confidence=result.confidence,
+            subcategory=subcategory,
             label_version=label_version,
         )
 

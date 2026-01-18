@@ -8,6 +8,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function apiBaseUrl(): string {
+  // Mirror api/client.ts behavior for EventSource URLs.
+  return (import.meta as any).env?.VITE_API_BASE_URL ?? "";
+}
+
 export function useJobPolling(): {
   activeJob: CurrentJobResponse["active"] | null;
   jobStatus: JobStatusResponse | null;
@@ -45,38 +50,100 @@ export function useJobPolling(): {
     };
   }, []);
 
-  // When there's an active job, poll its status more aggressively.
+  // When there's an active job, prefer SSE for status updates (fallback to polling).
   useEffect(() => {
     statusPollAbort.current?.abort();
     statusPollAbort.current = new AbortController();
 
     let cancelled = false;
 
-    async function loop(jobId: string) {
-      while (!cancelled) {
-        try {
-          const status = await api.getJobStatus(jobId);
-          if (cancelled) return;
-          setJobStatus(status);
+    let es: EventSource | null = null;
+    let usingFallbackPolling = false;
+    let lastStatusAt = Date.now();
+    let watchdog: number | null = null;
 
-          if (status.state === "succeeded" || status.state === "failed") {
-            setLastCompletedJobId(status.job_id);
-            return;
-          }
-        } catch (e) {
-          if (cancelled) return;
-          const msg = e instanceof ApiError ? e.bodyText || e.message : String(e);
-          // Keep previous jobStatus if we have one.
-          setJobStatus((prev: JobStatusResponse | null) => prev ?? null);
-          console.warn("job status poll failed", msg);
-        }
-
-        await sleep(2000);
+    function closeSse() {
+      try {
+        es?.close();
+      } catch {
+        // ignore
       }
+      es = null;
+    }
+
+    function startFallbackPolling(jobId: string) {
+      if (usingFallbackPolling) return;
+      usingFallbackPolling = true;
+
+      async function loop() {
+        while (!cancelled) {
+          try {
+            const status = await api.getJobStatus(jobId);
+            if (cancelled) return;
+            setJobStatus(status);
+
+            if (status.state === "succeeded" || status.state === "failed") {
+              setLastCompletedJobId(status.job_id);
+              return;
+            }
+          } catch (e) {
+            if (cancelled) return;
+            const msg = e instanceof ApiError ? e.bodyText || e.message : String(e);
+            // Keep previous jobStatus if we have one.
+            setJobStatus((prev: JobStatusResponse | null) => prev ?? null);
+            console.warn("job status poll failed", msg);
+          }
+
+          await sleep(2000);
+        }
+      }
+
+      loop();
     }
 
     if (activeJob?.job_id) {
-      loop(activeJob.job_id);
+      const jobId = activeJob.job_id;
+
+      // Try SSE first (lower latency + less polling overhead).
+      try {
+        const url = `${apiBaseUrl()}/api/jobs/${encodeURIComponent(jobId)}/events`;
+        es = new EventSource(url);
+
+        es.addEventListener("job_status", (evt: MessageEvent) => {
+          if (cancelled) return;
+          lastStatusAt = Date.now();
+
+          try {
+            const status = JSON.parse(String(evt.data)) as JobStatusResponse;
+            setJobStatus(status);
+            if (status.state === "succeeded" || status.state === "failed") {
+              setLastCompletedJobId(status.job_id);
+              closeSse();
+            }
+          } catch (e) {
+            console.warn("job SSE parse failed", e);
+          }
+        });
+
+        es.onerror = () => {
+          // Most browsers call onerror for transient disconnects too.
+          // We fall back to polling if the stream becomes unreliable.
+          if (cancelled) return;
+          closeSse();
+          startFallbackPolling(jobId);
+        };
+
+        // If we don't receive any status updates in a while, assume SSE isn't working and poll.
+        watchdog = window.setInterval(() => {
+          if (cancelled) return;
+          if (Date.now() - lastStatusAt > 20000) {
+            closeSse();
+            startFallbackPolling(jobId);
+          }
+        }, 5000);
+      } catch {
+        startFallbackPolling(jobId);
+      }
     } else {
       setJobStatus(null);
     }
@@ -84,6 +151,11 @@ export function useJobPolling(): {
     return () => {
       cancelled = true;
       statusPollAbort.current?.abort();
+
+      if (watchdog) {
+        window.clearInterval(watchdog);
+      }
+      closeSse();
     };
   }, [activeJob?.job_id]);
 

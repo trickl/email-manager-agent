@@ -47,14 +47,24 @@ class Settings(BaseSettings):
 
     # Clustering/labeling
     similarity_threshold: float = 0.85
-    label_version: str = "tier1-v1"
+    label_version: str = "tier2-v1"
 
     # Development helpers
     seed_fake_email: bool = False
 
     # Optional local LLM (Ollama)
     ollama_host: str | None = None
-    ollama_model: str = "llama3.1"
+    ollama_model: str = "llama3.1:8b"
+
+    # Embeddings
+    # Default to a small embedding model that matches our historical VECTOR_SIZE=384.
+    # Ensure it's available locally: `ollama pull all-minilm`.
+    embedding_model: str = "all-minilm"
+    embedding_timeout_seconds: int = 60
+
+    # Safety valve: allow falling back to deterministic dummy vectors when Ollama embeddings
+    # are unavailable. Prefer leaving this False in normal operation.
+    allow_deterministic_vectors: bool = False
 
 
 class StatusResponse(BaseModel):

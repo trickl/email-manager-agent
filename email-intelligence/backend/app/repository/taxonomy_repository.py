@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.labeling.tier2 import TIER2_SEED, slugify, validate_tier2_seed
+
 
 @dataclass(frozen=True)
 class TaxonomyLabelSeed:
@@ -70,6 +72,15 @@ TIER1_SEED: tuple[TaxonomyLabelSeed, ...] = (
         ),
     ),
 )
+
+
+_TIER1_SLUG_BY_NAME: dict[str, str] = {l.name: l.slug for l in TIER1_SEED}
+
+
+def _tier2_slug(*, parent_slug: str, subcategory_name: str) -> str:
+    # Ensure uniqueness across tiers by namespacing Tier-2 under Tier-1.
+    # Example: financial--invoices-and-bills
+    return f"{parent_slug}--{slugify(subcategory_name)}"
 
 
 def ensure_taxonomy_schema(engine) -> None:
@@ -138,8 +149,162 @@ def seed_tier1_taxonomy(engine) -> None:
             )
 
 
+def seed_tier2_taxonomy(engine) -> None:
+    """Insert the Tier-2 taxonomy seed (idempotent).
+
+    Tier-2 rows reference Tier-1 rows via parent_id.
+
+    Args:
+        engine: SQLAlchemy engine bound to the Postgres database.
+    """
+
+    validate_tier2_seed()
+
+    from sqlalchemy import text
+
+    parent_q = text(
+        """
+        SELECT id
+        FROM taxonomy_label
+        WHERE level = 1 AND slug = :slug
+        """
+    )
+
+    insert = text(
+        """
+        INSERT INTO taxonomy_label (level, slug, name, description, parent_id)
+        VALUES (2, :slug, :name, :description, :parent_id)
+        ON CONFLICT (slug) DO NOTHING
+        """
+    )
+
+    with engine.begin() as conn:
+        for category_name, subs in TIER2_SEED.items():
+            parent_slug = _TIER1_SLUG_BY_NAME.get(category_name)
+            if not parent_slug:
+                # Should not happen due to validate_tier2_seed, but keep robust.
+                continue
+
+            parent_id = conn.execute(parent_q, {"slug": parent_slug}).scalar()
+            if parent_id is None:
+                continue
+
+            for sub_name, sub_desc in subs:
+                conn.execute(
+                    insert,
+                    {
+                        "slug": _tier2_slug(parent_slug=parent_slug, subcategory_name=sub_name),
+                        "name": sub_name,
+                        "description": sub_desc,
+                        "parent_id": int(parent_id),
+                    },
+                )
+
+
+def list_tier2_options(engine) -> dict[str, list[str]]:
+    """Return the current Tier-2 taxonomy (from Postgres).
+
+    Returns:
+        Mapping of Tier-1 category name -> ordered list of Tier-2 subcategory names.
+    """
+
+    from sqlalchemy import text
+
+    q = text(
+        """
+        SELECT
+            p.name AS category,
+            c.name AS subcategory
+        FROM taxonomy_label c
+        JOIN taxonomy_label p ON p.id = c.parent_id
+        WHERE c.level = 2
+        ORDER BY p.name ASC, c.name ASC
+        """
+    )
+
+    out: dict[str, list[str]] = {}
+    with engine.begin() as conn:
+        rows = conn.execute(q).fetchall()
+
+    for r in rows:
+        cat = str(r[0])
+        sub = str(r[1])
+        out.setdefault(cat, []).append(sub)
+
+    # Ensure all Tier-1 categories have a key (even if empty).
+    for cat in _TIER1_SLUG_BY_NAME:
+        out.setdefault(cat, [])
+
+    return out
+
+
+def ensure_tier2_label(
+    engine,
+    *,
+    category_name: str,
+    subcategory_name: str,
+    description: str = "",
+) -> None:
+    """Ensure a Tier-2 subcategory exists (create if missing).
+
+    This supports taxonomy extension: if the model returns a subcategory that isn't in the
+    current Tier-2 list, we insert it under the chosen Tier-1 category.
+
+    Args:
+        engine: SQLAlchemy engine bound to Postgres.
+        category_name: Tier-1 category name.
+        subcategory_name: Tier-2 subcategory name.
+        description: Optional description.
+    """
+
+    parent_slug = _TIER1_SLUG_BY_NAME.get(category_name)
+    if not parent_slug:
+        return
+
+    sub = subcategory_name.strip()
+    if not sub:
+        return
+
+    # Keep names reasonably bounded for UI + storage. (DB column is TEXT, but UX matters.)
+    if len(sub) > 80:
+        sub = sub[:80].rstrip()
+
+    from sqlalchemy import text
+
+    parent_q = text(
+        """
+        SELECT id
+        FROM taxonomy_label
+        WHERE level = 1 AND slug = :slug
+        """
+    )
+    insert = text(
+        """
+        INSERT INTO taxonomy_label (level, slug, name, description, parent_id)
+        VALUES (2, :slug, :name, :description, :parent_id)
+        ON CONFLICT (slug) DO NOTHING
+        """
+    )
+
+    with engine.begin() as conn:
+        parent_id = conn.execute(parent_q, {"slug": parent_slug}).scalar()
+        if parent_id is None:
+            return
+
+        conn.execute(
+            insert,
+            {
+                "slug": _tier2_slug(parent_slug=parent_slug, subcategory_name=sub),
+                "name": sub,
+                "description": description,
+                "parent_id": int(parent_id),
+            },
+        )
+
+
 def ensure_taxonomy_seeded(engine) -> None:
     """Ensure schema exists and the Tier-1 taxonomy is present."""
 
     ensure_taxonomy_schema(engine)
     seed_tier1_taxonomy(engine)
+    seed_tier2_taxonomy(engine)

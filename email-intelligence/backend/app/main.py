@@ -7,7 +7,6 @@ business logic or ingestion.
 from __future__ import annotations
 
 import os
-import random
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,11 +30,14 @@ from app.settings import Settings
 from app.settings import StatusResponse
 from app.vector.qdrant import ensure_collection
 from app.vector.qdrant import query_similar
+from app.vector.vectorizer import vectorize_text
+from app.vector.vectorizer import vector_version_tag
 from app.clustering.pipeline import cluster_and_label
 from app.gmail.client import get_gmail_service_from_files
 
 from app.api.dashboard import router as dashboard_router
 from app.api.jobs import router as jobs_router
+from app.api.messages import router as messages_router
 
 app = FastAPI(title="Email Intelligence Backend")
 
@@ -50,6 +52,7 @@ app.add_middleware(
 
 app.include_router(dashboard_router)
 app.include_router(jobs_router)
+app.include_router(messages_router)
 
 
 @app.on_event("startup")
@@ -78,8 +81,9 @@ def health():
 
 @app.get("/test/vector-search")
 def test_vector_search():
-    vector = [random.random() for _ in range(384)]
-    results = query_similar(vector)
+    # Use a real embedding so this endpoint actually indicates whether vectors are meaningful.
+    vector = vectorize_text("Subject: flight tickets receipt.\nSender domain: example.com.\n")
+    results = query_similar(vector, vector_version=vector_version_tag())
     return {"matches": len(results)}
 
 

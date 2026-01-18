@@ -1,4 +1,9 @@
-import type { CurrentJobResponse, DashboardTreeResponse, JobStatusResponse } from "./types";
+import type {
+  CurrentJobResponse,
+  DashboardTreeResponse,
+  JobStatusResponse,
+  MessageSamplesResponse,
+} from "./types";
 
 export class ApiError extends Error {
   public readonly status: number;
@@ -38,6 +43,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getDashboardTree: () => request<DashboardTreeResponse>("/api/dashboard/tree"),
+
+  getMessageSamples: (nodeId: string, limit: number = 25) =>
+    request<MessageSamplesResponse>(
+      `/api/messages/samples?node_id=${encodeURIComponent(nodeId)}&limit=${encodeURIComponent(
+        String(limit)
+      )}`
+    ),
 
   startIngestFull: () => request<{ job_id: string }>("/api/jobs/ingest/full", { method: "POST" }),
   startIngestRefresh: () =>

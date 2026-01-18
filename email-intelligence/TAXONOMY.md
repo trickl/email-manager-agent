@@ -119,3 +119,62 @@ Instead of Unknown:
 - If it reports automated events → System & Automated
 
 This forces the model (and later, you) to commit to a worldview, which is how the system improves.
+
+## Tier-2 Taxonomy (Initial, Preferred)
+
+Tier-2 subcategories are **preferred** (and are supplied to the model) to avoid "pot luck" naming.
+They are **evolvable**: when the model encounters a cluster that doesn't fit any existing Tier-2
+subcategory, it may propose a new one. The system persists these extensions so future prompts
+always include the latest taxonomy.
+
+### Financial
+
+- **Receipts** — One-off purchase confirmations
+- **Orders & Purchases** — Order confirmations, purchase details (non-recurring)
+- **Payments & Reminders** — Payment due notices, payment reminders, outstanding balance
+- **Tickets & Bookings** — Ticketing, bookings, reservations with a financial component
+- **Invoices & Bills** — Requests for payment (utilities, services)
+- **Statements** — Periodic summaries (bank, credit card, investment)
+- **Subscriptions** — Recurring charges (software, media, memberships)
+- **Taxes & Legal** — Tax documents, filings, official notices
+- **Refunds & Adjustments** — Chargebacks, refunds, corrections
+
+### Commercial & Marketing
+
+- **Newsletters** — Regular informational/promotional mailings
+- **Promotions & Offers** — Discounts, sales, limited offers
+- **Product Updates** — New features, launches, announcements
+- **Events & Webinars** — Invitations, registrations, reminders
+- **Surveys & Feedback** — Requests for reviews, ratings, opinions
+
+### Work & Professional
+
+- **Internal Communication** — Colleagues, team updates, internal notices
+- **Project & Client Updates** — Deliverables, status reports, coordination
+- **Recruitment** — Job applications, recruiters, interviews
+- **Professional Networks** — LinkedIn, industry groups, associations
+- **Training & Education** — Courses, certifications, learning platforms
+
+### Personal & Social
+
+- **Friends & Family** — Direct personal correspondence
+- **Health & Care** — Appointments, results, providers (non-billing)
+- **Education** — Schools, universities, learning (non-work)
+- **Clubs & Communities** — Hobbies, societies, local groups
+- **Travel & Leisure** — Bookings, itineraries, leisure activities (non-financial content)
+
+### Account & Identity
+
+- **Security Alerts** — Login warnings, suspicious activity
+- **Authentication** — Password resets, 2FA codes
+- **Account Changes** — Email changes, profile updates
+- **Policy & Terms** — Terms of service, privacy updates
+- **Account Notifications** — General account status messages
+
+### System & Automated
+
+- **Code & DevOps** — GitHub, CI/CD, build systems
+- **Monitoring & Alerts** — System health, uptime, errors
+- **Forum & Platform Notifications** — Replies, mentions, moderation
+- **Scheduled Reports** — Automated digests, summaries
+- **Integration Events** — Webhooks, API-driven notifications
