@@ -1,8 +1,9 @@
 """Utility functions for Email Manager Agent."""
 
 import time
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 import structlog
 

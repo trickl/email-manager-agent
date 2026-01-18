@@ -3,8 +3,6 @@
 This module provides the main agent that orchestrates email processing.
 """
 
-from typing import Optional
-
 import structlog
 
 from email_manager_agent.config import Settings
@@ -23,9 +21,9 @@ class EmailAgent:
 
     def __init__(
         self,
-        gmail_client: Optional[GmailClient] = None,
-        ollama_client: Optional[OllamaClient] = None,
-        settings: Optional[Settings] = None,
+        gmail_client: GmailClient | None = None,
+        ollama_client: OllamaClient | None = None,
+        settings: Settings | None = None,
     ) -> None:
         """Initialize the email agent.
 
@@ -41,7 +39,7 @@ class EmailAgent:
         self.ollama_client = ollama_client or OllamaClient(self.settings)
         logger.info("email_agent_initialized")
 
-    async def process_emails(self, max_emails: Optional[int] = None) -> None:
+    async def process_emails(self, max_emails: int | None = None) -> None:
         """Process emails from Gmail inbox.
 
         Args:

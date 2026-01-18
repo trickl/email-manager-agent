@@ -3,12 +3,11 @@
 This module provides a client for interacting with the Gmail API.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 
 from email_manager_agent.config import Settings
-from email_manager_agent.exceptions import AuthenticationError, GmailAPIError
 
 logger = structlog.get_logger()
 
@@ -20,7 +19,7 @@ class GmailClient:
     and other Gmail operations.
     """
 
-    def __init__(self, settings: Optional[Settings] = None) -> None:
+    def __init__(self, settings: Settings | None = None) -> None:
         """Initialize Gmail client.
 
         Args:
@@ -29,7 +28,7 @@ class GmailClient:
         from email_manager_agent.config import get_settings
 
         self.settings = settings or get_settings()
-        self._service: Optional[Any] = None
+        self._service: Any | None = None
         logger.info("gmail_client_initialized")
 
     async def authenticate(self) -> None:
@@ -44,8 +43,8 @@ class GmailClient:
 
     async def list_messages(
         self,
-        max_results: Optional[int] = None,
-        query: Optional[str] = None,
+        max_results: int | None = None,
+        query: str | None = None,
     ) -> list[dict[str, Any]]:
         """List messages from Gmail.
 

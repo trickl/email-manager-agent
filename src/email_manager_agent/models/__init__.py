@@ -3,9 +3,8 @@
 This module contains Pydantic models for data validation and serialization.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -59,7 +58,7 @@ class EmailCategorization(BaseModel):
         default=False,
         description="Whether this is a subscription email",
     )
-    unsubscribe_link: Optional[str] = Field(
+    unsubscribe_link: str | None = Field(
         default=None,
         description="Unsubscribe link if available",
     )
@@ -71,9 +70,9 @@ class ProcessingResult(BaseModel):
     email_id: str = Field(description="Processed email ID")
     categorization: EmailCategorization = Field(description="Categorization result")
     processed_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Processing timestamp",
     )
     processing_time_ms: float = Field(description="Processing time in milliseconds")
     success: bool = Field(default=True, description="Whether processing succeeded")
-    error: Optional[str] = Field(default=None, description="Error message if failed")
+    error: str | None = Field(default=None, description="Error message if failed")

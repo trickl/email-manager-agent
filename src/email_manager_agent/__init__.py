@@ -9,4 +9,4 @@ __author__ = "Trickl"
 
 from email_manager_agent.config import Settings, get_settings
 
-__all__ = ["Settings", "get_settings", "__version__", "__author__"]
+__all__ = ["Settings", "__author__", "__version__", "get_settings"]

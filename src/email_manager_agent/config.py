@@ -6,7 +6,6 @@ Configuration can be loaded from environment variables or .env files.
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -78,13 +77,13 @@ class Settings(BaseSettings):
     )
 
     # Database Configuration (for future use)
-    database_url: Optional[str] = Field(
+    database_url: str | None = Field(
         default=None,
         description="Database URL for storing categorization history",
     )
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
     """Get cached application settings.
 

@@ -56,7 +56,9 @@ class TestEmailCategorization:
 
     def test_confidence_validation(self) -> None:
         """Test that confidence score is properly validated."""
-        with pytest.raises(Exception):  # Pydantic ValidationError
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
             EmailCategorization(
                 category=EmailCategory.SPAM,
                 importance=ImportanceLevel.LOW,

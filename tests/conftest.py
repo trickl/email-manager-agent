@@ -22,14 +22,14 @@ def sample_email_content() -> str:
     return """
     Subject: Weekly Newsletter - Python Tips
     From: newsletter@python.org
-    
+
     Welcome to this week's Python tips!
-    
+
     In this issue:
     1. New features in Python 3.12
     2. Best practices for async programming
     3. Top Python libraries of 2024
-    
+
     Unsubscribe: https://python.org/unsubscribe?id=123
     """
 

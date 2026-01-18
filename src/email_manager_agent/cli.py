@@ -4,7 +4,6 @@ This module provides the main entry point for the CLI application.
 """
 
 import sys
-from typing import Optional
 
 import structlog
 
@@ -13,7 +12,7 @@ from email_manager_agent.config import get_settings
 logger = structlog.get_logger()
 
 
-def main(args: Optional[list[str]] = None) -> int:
+def main(args: list[str] | None = None) -> int:
     """Main entry point for the Email Manager Agent CLI.
 
     Args:

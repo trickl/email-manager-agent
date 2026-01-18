@@ -16,4 +16,5 @@ mypy>=1.8.0
 pre-commit>=3.6.0
 
 # Type Stubs
-types-google-auth-oauthlib>=1.2.0
+# Note: Type stubs for Google libraries may not be available
+# types-google-auth-oauthlib>=1.2.0

@@ -3,12 +3,11 @@
 This module provides a client for interacting with Ollama LLM.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 
 from email_manager_agent.config import Settings
-from email_manager_agent.exceptions import OllamaConnectionError, OllamaInferenceError
 
 logger = structlog.get_logger()
 
@@ -20,7 +19,7 @@ class OllamaClient:
     for language model inference tasks.
     """
 
-    def __init__(self, settings: Optional[Settings] = None) -> None:
+    def __init__(self, settings: Settings | None = None) -> None:
         """Initialize Ollama client.
 
         Args:
@@ -38,15 +37,13 @@ class OllamaClient:
     async def generate(
         self,
         prompt: str,
-        model: Optional[str] = None,
-        stream: bool = False,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Generate text using Ollama.
 
         Args:
             prompt: The prompt to send to the model.
             model: Model name to use. If None, uses default from settings.
-            stream: Whether to stream the response.
 
         Returns:
             Response dictionary containing generated text and metadata.
@@ -63,7 +60,7 @@ class OllamaClient:
     async def chat(
         self,
         messages: list[dict[str, str]],
-        model: Optional[str] = None,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Have a chat conversation with Ollama.
 
