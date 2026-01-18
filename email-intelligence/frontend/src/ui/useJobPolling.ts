@@ -23,6 +23,13 @@ export function useJobPolling(): {
   const [jobStatus, setJobStatus] = useState<JobStatusResponse | null>(null);
   const [lastCompletedJobId, setLastCompletedJobId] = useState<string | null>(null);
 
+  // Coalesce frequent status updates (especially via SSE) to avoid excessive renders.
+  // Note: this also indirectly reduces dashboard refresh frequency (DashboardPage listens
+  // to jobStatus.updated_at changes).
+  const lastJobStatusEmitAtRef = useRef<number>(0);
+  const pendingJobStatusRef = useRef<JobStatusResponse | null>(null);
+  const jobStatusFlushTimerRef = useRef<number | null>(null);
+
   const statusPollAbort = useRef<AbortController | null>(null);
 
   // Always poll current job every 5 seconds.
@@ -62,6 +69,54 @@ export function useJobPolling(): {
     let lastStatusAt = Date.now();
     let watchdog: number | null = null;
 
+    function clearJobStatusFlushTimer() {
+      if (jobStatusFlushTimerRef.current) {
+        window.clearTimeout(jobStatusFlushTimerRef.current);
+      }
+      jobStatusFlushTimerRef.current = null;
+    }
+
+    function emitJobStatus(status: JobStatusResponse) {
+      pendingJobStatusRef.current = null;
+      lastJobStatusEmitAtRef.current = Date.now();
+      setJobStatus(status);
+    }
+
+    function setJobStatusThrottled(status: JobStatusResponse, opts?: { force?: boolean }) {
+      if (cancelled) return;
+
+      const force = Boolean(opts?.force);
+      const now = Date.now();
+
+      // Always emit terminal states immediately.
+      if (force || status.state === "succeeded" || status.state === "failed") {
+        clearJobStatusFlushTimer();
+        emitJobStatus(status);
+        return;
+      }
+
+      const minIntervalMs = 500;
+      const elapsed = now - lastJobStatusEmitAtRef.current;
+
+      if (elapsed >= minIntervalMs) {
+        clearJobStatusFlushTimer();
+        emitJobStatus(status);
+        return;
+      }
+
+      // Otherwise, keep only the latest status and schedule a flush.
+      pendingJobStatusRef.current = status;
+      if (jobStatusFlushTimerRef.current) return;
+
+      const delay = Math.max(0, minIntervalMs - elapsed);
+      jobStatusFlushTimerRef.current = window.setTimeout(() => {
+        jobStatusFlushTimerRef.current = null;
+        if (cancelled) return;
+        const pending = pendingJobStatusRef.current;
+        if (pending) emitJobStatus(pending);
+      }, delay);
+    }
+
     function closeSse() {
       try {
         es?.close();
@@ -80,7 +135,10 @@ export function useJobPolling(): {
           try {
             const status = await api.getJobStatus(jobId);
             if (cancelled) return;
-            setJobStatus(status);
+
+            // Polling is already low-frequency (2s), but we route through the same
+            // throttler for consistency.
+            setJobStatusThrottled(status, { force: true });
 
             if (status.state === "succeeded" || status.state === "failed") {
               setLastCompletedJobId(status.job_id);
@@ -104,6 +162,11 @@ export function useJobPolling(): {
     if (activeJob?.job_id) {
       const jobId = activeJob.job_id;
 
+      // Reset throttling window per job so the first status is shown immediately.
+      clearJobStatusFlushTimer();
+      pendingJobStatusRef.current = null;
+      lastJobStatusEmitAtRef.current = 0;
+
       // Try SSE first (lower latency + less polling overhead).
       try {
         const url = `${apiBaseUrl()}/api/jobs/${encodeURIComponent(jobId)}/events`;
@@ -115,7 +178,7 @@ export function useJobPolling(): {
 
           try {
             const status = JSON.parse(String(evt.data)) as JobStatusResponse;
-            setJobStatus(status);
+            setJobStatusThrottled(status);
             if (status.state === "succeeded" || status.state === "failed") {
               setLastCompletedJobId(status.job_id);
               closeSse();
@@ -151,6 +214,9 @@ export function useJobPolling(): {
     return () => {
       cancelled = true;
       statusPollAbort.current?.abort();
+
+      clearJobStatusFlushTimer();
+      pendingJobStatusRef.current = null;
 
       if (watchdog) {
         window.clearInterval(watchdog);
