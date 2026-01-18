@@ -18,6 +18,12 @@ I do **not** accept liability for any damage, data loss, privacy impact, or data
 
 This repository is shared with the open-source community to **inspire and help you build your own projects**—please be mindful, protect your privacy, and apply appropriate safeguards.
 
+## Screenshot
+
+Below is the (optional) Email Intelligence dashboard UI included under `email-intelligence/`.
+
+![Email Intelligence dashboard screenshot](docs/screenshots/email-intelligence-dashboard.png)
+
 ## Features
 
 - 🤖 **AI-Powered Categorization**: Uses Ollama LLM for intelligent email classification

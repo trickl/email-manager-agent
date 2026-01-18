@@ -64,6 +64,16 @@ export default function HierarchyTree(props: Props) {
           <ButtonBase
             key={node.id}
             onClick={() => props.onSelect(node.id)}
+            component="div"
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              // Keep the row keyboard-accessible even though it's not a native <button>.
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                props.onSelect(node.id);
+              }
+            }}
             sx={{
               width: "100%",
               justifyContent: "flex-start",
