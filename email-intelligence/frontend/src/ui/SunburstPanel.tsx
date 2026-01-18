@@ -4,6 +4,7 @@ import Button from "@mui/material/Button";
 import Link from "@mui/material/Link";
 import Paper from "@mui/material/Paper";
 import Typography from "@mui/material/Typography";
+import { animated } from "@react-spring/web";
 import type { MouseEvent } from "react";
 import type { DashboardNode } from "../api/types";
 import { usefulnessColor } from "../utils/colors";
@@ -25,6 +26,19 @@ type SunburstDatum = {
   is_pending?: boolean;
   children?: SunburstDatum[];
 };
+
+function shortenLabel(label: string, maxLen: number): string {
+  const s = String(label ?? "").trim();
+  if (s.length <= maxLen) return s;
+  return `${s.slice(0, Math.max(0, maxLen - 1))}…`;
+}
+
+function approxTextWidthPx(text: string, fontSizePx: number): number {
+  // A pragmatic estimate so we can draw a background pill without measuring DOM.
+  // Works well enough for short tier-1 labels.
+  const avgCharWidth = fontSizePx * 0.62;
+  return Math.max(0, text.length) * avgCharWidth;
+}
 
 function nodeKind(id: string): string {
   if (!id) return "";
@@ -301,7 +315,55 @@ export default function SunburstPanel(props: {
                 return usefulnessColor(data?.unread_ratio);
               }}
               childColor={{ from: "color", modifiers: [["brighter", 0.15]] }}
-              enableArcLabels={false}
+              // Always show labels for tier-1 segments (children of the current root).
+              // This gives a “tooltip-like” always-visible hint without having to hover.
+              enableArcLabels={true}
+              arcLabel={(node: any) => {
+                // Depth is relative to the `data` root we pass into the sunburst.
+                // root=0, children=1, grandchildren=2...
+                const depth = Number((node as any)?.depth ?? NaN);
+                if (depth !== 1) return "";
+                const name = String((node as any)?.data?.name ?? (node as any)?.id ?? "");
+                return shortenLabel(name, 18);
+              }}
+              arcLabelsSkipAngle={5}
+              arcLabelsRadiusOffset={0.66}
+              arcLabelsTextColor="#ffffff"
+              arcLabelsComponent={({ label, style }: any) => {
+                if (!label) return <g />;
+
+                const fontSize = 11;
+                const padX = 8;
+                const padY = 4;
+                const textWidth = approxTextWidthPx(String(label), fontSize);
+                const w = Math.ceil(textWidth + padX * 2);
+                const h = fontSize + padY * 2;
+                const rx = Math.ceil(h / 2);
+
+                return (
+                  <animated.g transform={style.transform} style={{ pointerEvents: "none" }}>
+                    <rect
+                      x={-w / 2}
+                      y={-h / 2}
+                      width={w}
+                      height={h}
+                      rx={rx}
+                      ry={rx}
+                      fill="rgba(0,0,0,0.62)"
+                      stroke="rgba(255,255,255,0.18)"
+                      strokeWidth={1}
+                    />
+                    <text
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      fill={style.textColor}
+                      style={{ fontSize, fontWeight: 800 }}
+                    >
+                      {label}
+                    </text>
+                  </animated.g>
+                );
+              }}
               tooltip={({ id, value, data }: any) => {
                 const unreadRatio = (data as any).unread_ratio as number;
                 const unreadPct = Math.round(unreadRatio * 100);
