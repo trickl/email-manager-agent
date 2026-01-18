@@ -1,6 +1,11 @@
 # Email Manager Agent
 
-An AI-powered agent designed to automatically categorize, unsubscribe, and clean up neglected email inboxes using Ollama and Gmail API.
+Tooling and prototypes for **metadata-first Gmail analysis**.
+
+This repository currently contains:
+
+- A **Python CLI** (`email-manager`) that builds and queries a **local, header-only** Gmail index (SQLite + FTS).
+- An **Email Intelligence** dashboard under `email-intelligence/` (FastAPI + React) that can ingest metadata into Postgres/Qdrant and run clustering + labeling using Ollama.
 
 ## Important notice: personal use, privacy & liability
 
@@ -18,6 +23,8 @@ I do **not** accept liability for any damage, data loss, privacy impact, or data
 
 This repository is shared with the open-source community to **inspire and help you build your own projects**—please be mindful, protect your privacy, and apply appropriate safeguards.
 
+Note: both the CLI and the dashboard default to the **read-only** Gmail scope (`gmail.readonly`).
+
 ## Screenshot
 
 Below is the (optional) Email Intelligence dashboard UI included under `email-intelligence/`.
@@ -26,18 +33,37 @@ Below is the (optional) Email Intelligence dashboard UI included under `email-in
 
 ## Features
 
-- 🤖 **AI-Powered Categorization**: Uses Ollama LLM for intelligent email classification
-- 📧 **Gmail Integration**: Seamless integration with Gmail API
-- 🏷️ **Smart Labels**: Automatically categorizes emails (personal, work, newsletters, etc.)
-- 🎯 **Priority Detection**: Identifies important emails automatically
-- 🔗 **Unsubscribe Detection**: Finds and suggests unsubscribe actions
-- 📊 **Inbox Cleanup**: Helps organize and clean neglected inboxes
+### Header-only Gmail index CLI (`email-manager`)
+
+- 📥 **Metadata-only download** (Gmail `format=metadata`) into a local SQLite database
+- 🔎 **Fast local search** via SQLite FTS (subject search)
+- 📈 **Quick stats** (total/unread counts, top senders)
+- 🔐 Defaults to **`gmail.readonly`** and does **not** modify your mailbox
+
+### Email Intelligence dashboard (`email-intelligence/`)
+
+- 🧱 **Metadata-first ingestion** into Postgres + embeddings in Qdrant
+- 🧠 **Clustering + labeling** using embeddings and Ollama (bodies are fetched only for representative samples during labeling)
+- 🧭 **Explorable hierarchy** (category → subcategory → cluster → sender) with a tree + sunburst
+- 🧪 **Job runner** endpoints with live progress streaming (SSE)
+- 🗂️ **Message samples** for a selected node (metadata only)
+
+### Not implemented (yet)
+
+- Automatic unsubscribe actions
+- Automatic label/move/delete operations against your Gmail mailbox
+- The end-to-end automation methods in `EmailAgent` (`process_emails`, `categorize_email`) are placeholders
 
 ## Prerequisites
 
 - Python 3.10 or higher
-- [Ollama](https://ollama.ai/) installed and running locally
-- Gmail API credentials (see [Setup](#gmail-api-setup))
+- Gmail API credentials (see [Gmail API Setup](#gmail-api-setup))
+
+For the Email Intelligence dashboard (`email-intelligence/`):
+
+- Docker + Docker Compose (for Postgres + Qdrant)
+- Node.js (for the React UI)
+- [Ollama](https://ollama.ai/) (recommended for embeddings + labeling)
 
 ## Installation
 
@@ -65,7 +91,9 @@ pip install -r requirements-dev.txt
 
 ## Configuration
 
-Create a `.env` file in the project root:
+### CLI configuration (repo root)
+
+Create a `.env` file in the project root (or copy `.env.example` to `.env`):
 
 ```env
 # Ollama Configuration
@@ -75,12 +103,29 @@ EMAIL_AGENT_OLLAMA_MODEL=llama2
 # Gmail Configuration
 EMAIL_AGENT_GMAIL_CREDENTIALS_PATH=credentials.json
 EMAIL_AGENT_GMAIL_TOKEN_PATH=token.json
+EMAIL_AGENT_GMAIL_SCOPE=https://www.googleapis.com/auth/gmail.readonly
+
+# Header index configuration
+EMAIL_AGENT_INDEX_DB_PATH=email_index.sqlite3
+EMAIL_AGENT_INDEX_BATCH_SIZE=200
 
 # Application Configuration
 EMAIL_AGENT_LOG_LEVEL=INFO
 EMAIL_AGENT_DEBUG=false
 EMAIL_AGENT_MAX_RETRIES=3
+
+# Optional caching knobs (mostly used by future features)
+EMAIL_AGENT_CACHE_ENABLED=true
+EMAIL_AGENT_CACHE_TTL=3600
+
+# Optional: list() pagination size (Gmail max page size is 500)
+EMAIL_AGENT_GMAIL_MAX_RESULTS=100
 ```
+
+### Email Intelligence backend configuration
+
+Copy `email-intelligence/backend/.env.example` to `email-intelligence/backend/.env` and edit values as needed.
+That backend uses variables prefixed with `EMAIL_INTEL_`.
 
 ## Gmail API Setup
 
@@ -93,12 +138,29 @@ EMAIL_AGENT_MAX_RETRIES=3
 ## Usage
 
 ```bash
-# Run the email manager agent
+# Run the CLI
 email-manager
 
 # Or run directly with Python
 python -m email_manager_agent.cli
 ```
+
+### Common CLI commands
+
+```bash
+# Build a local header-only index
+email-manager index build --query "in:inbox" --limit 2000
+
+# Search the local index (SQLite FTS query)
+email-manager index search "invoice OR receipt"
+
+# Show stats and top senders
+email-manager index stats
+```
+
+### Running the Email Intelligence dashboard
+
+See `email-intelligence/` for the full stack (FastAPI + Postgres + Qdrant + React UI).
 
 ## Development
 

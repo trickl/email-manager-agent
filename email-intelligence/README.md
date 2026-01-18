@@ -1,177 +1,99 @@
-# Email Intelligence System – Phase 0/1 (Live Wiring)
+# Email Intelligence Dashboard
 
-Objective
+Metadata-first email analysis with a small FastAPI backend, a React dashboard, and a simple job runner.
 
-Stand up a fully running system with:
+High-level flow:
 
-- A Python backend (virtualenv-based)
-- Gmail API client wired (no ingestion yet)
-- PostgreSQL running, reachable, with one real table
-- Qdrant running, reachable, with one empty collection
-- React + Vite UI rendering a live but empty dashboard
-- Docker used only for services (Postgres, Qdrant)
+1. **Ingest metadata** from Gmail (no bodies) into Postgres + Qdrant.
+2. **Cluster and label** unlabelled messages using embeddings + Ollama.
+3. Explore results via a **hierarchy tree + sunburst** and inspect **sample message metadata**.
 
-No fake services. No mocks. No production logic.
+This is intentionally opinionated:
 
-Phase 1 adds a stable Python domain model and a single fake-email ingestion flow
-to prove Postgres + Qdrant wiring end-to-end.
+- Prefer *aggregation-first* and *metadata-first* workflows.
+- Make uncertainty visible (e.g., “Pending labelling”).
+- Avoid mailbox-modifying actions by default (uses `gmail.readonly`).
 
-## Repository layout (mandatory)
+## What you get
 
-This directory contains the required layout:
+Backend (FastAPI):
 
-```
-email-intelligence/
-├── backend/
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py
-│   │   ├── config.py
-│   │   ├── db/
-│   │   │   ├── __init__.py
-│   │   │   └── postgres.py
-│   │   ├── vector/
-│   │   │   ├── __init__.py
-│   │   │   └── qdrant.py
-│   │   └── gmail/
-│   │       ├── __init__.py
-│   │       └── client.py
-│   ├── requirements.txt
-│   └── .env.example
-│
-├── frontend/
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.ts
-│   └── src/
-│       ├── main.tsx
-│       ├── App.tsx
-│       └── components/
-│           └── EmptyDashboard.tsx
-│
-├── docker/
-│   ├── docker-compose.yml
-│   └── postgres/
-│       └── init.sql
-│
-└── README.md
+- `GET /health` and `GET /status`
+- Dashboard data: `GET /api/dashboard/tree`
+- Message samples: `GET /api/messages/samples?node_id=...`
+- Jobs:
+  - Start: `POST /api/jobs/ingest/full`, `POST /api/jobs/ingest/refresh`, `POST /api/jobs/cluster-label/run`
+  - Status: `GET /api/jobs/{job_id}/status`, `GET /api/jobs/current`
+  - Live progress (SSE): `GET /api/jobs/{job_id}/events`
+
+Frontend (React/Vite):
+
+- Dashboard page with hierarchy tree, sunburst, and details panel
+- Jobs page (minimal placeholder; top bar shows active job + progress)
+
+## Prerequisites
+
+- Python 3.10+
+- Docker + Docker Compose (Postgres + Qdrant)
+- Node.js (for the UI)
+- Gmail OAuth credentials + token files
+- Ollama (recommended)
+  - Labeling uses an LLM (`EMAIL_INTEL_OLLAMA_MODEL`)
+  - Embeddings use a dedicated embedding model (default: `all-minilm`, 384 dims)
+
+## Quickstart
+
+### 1) Start Postgres + Qdrant
+
+From `email-intelligence/docker/`:
+
+```bash
+docker compose up -d
 ```
 
-## Step 1: Python virtual environment (backend)
+### 2) Configure backend environment
 
-Commands:
+Copy and edit:
 
-- `cd backend`
-- `python3 -m venv .venv`
-- `source .venv/bin/activate`
-- `pip install --upgrade pip`
+```bash
+cp backend/.env.example backend/.env
+```
 
-Install dependencies:
+At minimum, set:
 
-- `pip install -r requirements.txt`
+- `EMAIL_INTEL_GMAIL_CREDENTIALS_PATH`
+- `EMAIL_INTEL_GMAIL_TOKEN_PATH`
+- (optional) `EMAIL_INTEL_OLLAMA_HOST`, `EMAIL_INTEL_OLLAMA_MODEL`, `EMAIL_INTEL_EMBEDDING_MODEL`
 
-## Step 2: Backend stub (FastAPI)
+### 3) Run the backend
 
-The backend is a minimal FastAPI app with a health endpoint.
+From `email-intelligence/backend/`:
 
-Run command:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m uvicorn app.main:app --reload --port 8000
+```
 
-- `uvicorn app.main:app --reload`
+### 4) Run the frontend
 
-Health endpoint:
+From `email-intelligence/frontend/`:
 
-- `GET http://localhost:8000/health` returns `{ "status": "ok" }`
+```bash
+npm install
+npm run dev
+```
 
-## Step 3: PostgreSQL (real)
+The UI defaults to `http://localhost:5173` and expects the backend at `http://localhost:8000`.
 
-Start services:
+## Notes
 
-- `cd ../docker`
-- `docker compose up`
+- **Ingestion is metadata-only.** Bodies are only fetched for representative samples during the labeling step.
+- The job runner is **in-memory** (suitable for development and UI wiring).
 
-Note: `docker compose` must be run in the directory that contains `docker-compose.yml`
-(i.e. `email-intelligence/docker/`), or you must provide an explicit `-f` path.
+## Explicit non-goals (for now)
 
-This brings up Postgres and creates a real schema via `docker/postgres/init.sql`:
-
-- Table: `email_message` (authoritative Phase 1 schema)
-
-Note: the backend imports `app.db.postgres` which tests the DB connection on import.
-If Postgres is not running, the backend will fail fast.
-
-## Step 4: Qdrant (real, empty)
-
-Qdrant is started via Docker Compose and is reachable on:
-
-- `http://localhost:6333`
-
-On backend startup, `app.vector.qdrant.ensure_collection()` runs once to ensure an empty
-collection exists:
-
-- Collection: `email_subjects` (vector size 384, cosine distance)
-
-## Step 5: Gmail API client (metadata ingestion)
-
-`backend/app/gmail/client.py` implements:
-
-- Phase 1 metadata ingestion (no bodies): `users.messages.list` + `users.messages.get(format=metadata)`
-- Phase 2 representative sampling: body fetch is performed only for cluster analysis/labeling
-
-You will need local OAuth credentials + token files to run ingestion.
-
-## Step 6: Frontend (React + Vite)
-
-Bootstrap commands:
-
-- `cd frontend`
-- `npm install`
-- `npm run dev`
-
-The UI renders a live but empty dashboard with:
-
-- “No email data indexed yet.”
-- “Connect Gmail to begin analysis.”
-
-## Step 7: Environment configuration
-
-Copy `backend/.env.example` to `backend/.env` (or export variables) and adjust if needed.
-
-Preferred variables are namespaced:
-
-- `EMAIL_INTEL_DATABASE_URL=postgresql://email:email@localhost:5432/email_intelligence`
-- `EMAIL_INTEL_QDRANT_HOST=localhost`
-- `EMAIL_INTEL_QDRANT_PORT=6333`
-- `EMAIL_INTEL_GMAIL_CREDENTIALS_PATH=credentials.json`
-- `EMAIL_INTEL_GMAIL_TOKEN_PATH=token.json`
-
-Optional development helper:
-
-- `EMAIL_INTEL_SEED_FAKE_EMAIL=true` (runs the original fake seed on startup)
-
-## Step 8: Definition of “done” (strict)
-
-- `docker compose up` starts Postgres + Qdrant
-- Postgres contains table `email_message` (canonical store)
-- Postgres contains table `taxonomy_label` (Tier-1 taxonomy seed)
-- Postgres contains table `pipeline_kv` (checkpoint/phase)
-- Postgres contains table `email_cluster` (cluster identity)
-- Qdrant collection `email_subjects` exists
-- FastAPI `/health` returns `{ "status": "ok" }`
-- FastAPI `/status` returns counts and checkpoint information
-
-To run the pipeline explicitly:
-
-- `POST /pipeline/ingest-metadata` ingests metadata-only into Postgres + Qdrant
-- `POST /pipeline/cluster-label` clusters and labels emails (bodies are fetched only for samples)
-- React UI loads and shows empty dashboard
-
-## Explicit non-goals
-
-- No UI clustering logic
-- No unsubscribe actions
-- No model fine-tuning
-- No heuristic spam rules
-- No background jobs
-- No unsubscribe logic
-- No auth UI
-- No dashboards with fake numbers
+- Unsubscribe actions
+- Mailbox modification (labels/move/delete)
+- Training/fine-tuning
