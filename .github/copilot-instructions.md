@@ -10,6 +10,17 @@ The `README.md` contains an **Important notice: personal use, privacy & liabilit
 - Do not weaken it, bury it, or move it to the bottom.
 - If you update README wording elsewhere, ensure this notice remains clearly visible near the front of the file.
 
+## Email Intelligence System planning (north-star)
+
+For work under `email-intelligence/`, treat `email-intelligence/PLANNING.md` as the **target-state**
+reference document (north star).
+
+- It is **not** an implementation guide; it defines intended end-state behaviors and UX principles.
+- Prefer changes that move the system toward the target state (metadata-first ingestion, explainable
+    clustering-first workflows, UI that never hides uncertainty).
+- If a proposed change conflicts with `email-intelligence/PLANNING.md`, update the change or explicitly
+    document why the plan is being revised.
+
 **Email Manager Agent** is an AI-powered automation tool designed to help users manage their email inboxes more efficiently. The agent uses:
 
 - **Ollama**: A local LLM inference engine for AI-powered email categorization and content analysis

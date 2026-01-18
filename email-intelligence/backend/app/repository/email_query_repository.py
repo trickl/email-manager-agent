@@ -1,0 +1,309 @@
+"""Query helpers for clustering/labeling and observability."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+
+from app.domain.email import EmailMessage
+
+
+@dataclass(frozen=True)
+class EmailRow:
+    email: EmailMessage
+    category: str | None
+    cluster_id: str | None
+
+
+def count_total(engine) -> int:
+    from sqlalchemy import text
+
+    q = text("SELECT COUNT(*) FROM email_message")
+    with engine.begin() as conn:
+        return int(conn.execute(q).scalar() or 0)
+
+
+def count_labelled(engine) -> int:
+    from sqlalchemy import text
+
+    q = text("SELECT COUNT(*) FROM email_message WHERE category IS NOT NULL")
+    with engine.begin() as conn:
+        return int(conn.execute(q).scalar() or 0)
+
+
+def count_unlabelled(engine) -> int:
+    from sqlalchemy import text
+
+    q = text("SELECT COUNT(*) FROM email_message WHERE category IS NULL")
+    with engine.begin() as conn:
+        return int(conn.execute(q).scalar() or 0)
+
+
+def count_clusters(engine) -> int:
+    from sqlalchemy import text
+
+    q = text("SELECT COUNT(*) FROM email_cluster")
+    with engine.begin() as conn:
+        return int(conn.execute(q).scalar() or 0)
+
+
+def _row_to_email(row) -> EmailMessage:
+    return EmailMessage(
+        gmail_message_id=row[0],
+        thread_id=row[1],
+        subject=row[2],
+        subject_normalized=row[3],
+        from_address=row[4],
+        from_domain=row[5],
+        to_addresses=list(row[6] or []),
+        cc_addresses=list(row[7] or []),
+        bcc_addresses=list(row[8] or []),
+        is_unread=bool(row[9]),
+        internal_date=row[10],
+    )
+
+
+def fetch_next_unlabelled(engine) -> EmailRow | None:
+    """Return the next unlabelled email (deterministic order)."""
+
+    from sqlalchemy import text
+
+    q = text(
+        """
+        SELECT
+            gmail_message_id,
+            thread_id,
+            subject,
+            subject_normalized,
+            from_address,
+            from_domain,
+            to_addresses,
+            cc_addresses,
+            bcc_addresses,
+            is_unread,
+            internal_date,
+            category,
+            cluster_id
+        FROM email_message
+        WHERE category IS NULL
+        ORDER BY internal_date ASC, gmail_message_id ASC
+        LIMIT 1
+        """
+    )
+
+    with engine.begin() as conn:
+        row = conn.execute(q).fetchone()
+
+    if row is None:
+        return None
+
+    email = _row_to_email(row)
+    return EmailRow(email=email, category=row[11], cluster_id=row[12])
+
+
+def fetch_by_gmail_ids(engine, gmail_ids: list[str]) -> list[EmailRow]:
+    if not gmail_ids:
+        return []
+
+    from sqlalchemy import text
+
+    q = text(
+        """
+        SELECT
+            gmail_message_id,
+            thread_id,
+            subject,
+            subject_normalized,
+            from_address,
+            from_domain,
+            to_addresses,
+            cc_addresses,
+            bcc_addresses,
+            is_unread,
+            internal_date,
+            category,
+            cluster_id
+        FROM email_message
+        WHERE gmail_message_id = ANY(:gmail_ids)
+        """
+    )
+
+    with engine.begin() as conn:
+        rows = conn.execute(q, {"gmail_ids": gmail_ids}).fetchall()
+
+    result: list[EmailRow] = []
+    for row in rows:
+        result.append(EmailRow(email=_row_to_email(row), category=row[11], cluster_id=row[12]))
+    return result
+
+
+def insert_cluster(
+    *,
+    engine,
+    cluster_id: str,
+    seed_gmail_message_id: str,
+    from_domain: str,
+    subject_normalized: str | None,
+    similarity_threshold: float,
+    display_name: str | None = None,
+) -> None:
+    from sqlalchemy import text
+
+    q = text(
+        """
+        INSERT INTO email_cluster (
+            id,
+            seed_gmail_message_id,
+            from_domain,
+            subject_normalized,
+            similarity_threshold,
+            display_name
+        )
+        VALUES (
+            :id,
+            :seed_gmail_message_id,
+            :from_domain,
+            :subject_normalized,
+            :similarity_threshold,
+            :display_name
+        )
+        ON CONFLICT (seed_gmail_message_id) DO NOTHING
+        """
+    )
+
+    with engine.begin() as conn:
+        conn.execute(
+            q,
+            {
+                "id": cluster_id,
+                "seed_gmail_message_id": seed_gmail_message_id,
+                "from_domain": from_domain,
+                "subject_normalized": subject_normalized,
+                "similarity_threshold": similarity_threshold,
+                "display_name": display_name,
+            },
+        )
+
+
+def update_cluster_analysis(
+    *,
+    engine,
+    cluster_id: str,
+    frequency_label: str,
+    unread_label: str,
+) -> None:
+    from sqlalchemy import text
+
+    q = text(
+        """
+        UPDATE email_cluster
+        SET
+            frequency_label = :frequency_label,
+            unread_label = :unread_label
+        WHERE id = :id
+        """
+    )
+
+    with engine.begin() as conn:
+        conn.execute(
+            q,
+            {
+                "id": cluster_id,
+                "frequency_label": frequency_label,
+                "unread_label": unread_label,
+            },
+        )
+
+
+def update_cluster_label(
+    *,
+    engine,
+    cluster_id: str,
+    category: str,
+    subcategory: str | None,
+    label_confidence: float,
+    label_version: str,
+) -> None:
+    from sqlalchemy import text
+
+    q = text(
+        """
+        UPDATE email_cluster
+        SET
+            category = :category,
+            subcategory = :subcategory,
+            label_confidence = :label_confidence,
+            label_version = :label_version
+        WHERE id = :id
+        """
+    )
+
+    with engine.begin() as conn:
+        conn.execute(
+            q,
+            {
+                "id": cluster_id,
+                "category": category,
+                "subcategory": subcategory,
+                "label_confidence": label_confidence,
+                "label_version": label_version,
+            },
+        )
+
+
+def label_emails_in_cluster(
+    *,
+    engine,
+    gmail_ids: list[str],
+    cluster_id: str,
+    category: str,
+    subcategory: str | None,
+    label_confidence: float,
+    label_version: str,
+) -> int:
+    """Label emails that are currently unlabelled.
+
+    Returns:
+        Number of rows updated.
+    """
+
+    if not gmail_ids:
+        return 0
+
+    from sqlalchemy import text
+
+    q = text(
+        """
+        UPDATE email_message
+        SET
+            category = :category,
+            subcategory = :subcategory,
+            label_confidence = :label_confidence,
+            label_version = :label_version,
+            cluster_id = :cluster_id
+        WHERE gmail_message_id = ANY(:gmail_ids)
+          AND category IS NULL
+        """
+    )
+
+    with engine.begin() as conn:
+        res = conn.execute(
+            q,
+            {
+                "gmail_ids": gmail_ids,
+                "category": category,
+                "subcategory": subcategory,
+                "label_confidence": label_confidence,
+                "label_version": label_version,
+                "cluster_id": cluster_id,
+            },
+        )
+        return int(res.rowcount or 0)
+
+
+def latest_internal_date(engine) -> datetime | None:
+    from sqlalchemy import text
+
+    q = text("SELECT MAX(internal_date) FROM email_message")
+    with engine.begin() as conn:
+        return conn.execute(q).scalar()

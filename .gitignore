@@ -144,6 +144,16 @@ ENV/
 env.bak/
 venv.bak/
 
+# OAuth / API credential files (keep these out of git)
+credentials.json
+token.json
+client_secret*.json
+**/credentials.json
+**/token.json
+**/client_secret*.json
+*.credentials.json
+*.token.json
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -205,3 +215,19 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# --- Email Intelligence UI (TypeScript/Vite) ---
+# Keep lockfiles (package-lock.json / pnpm-lock.yaml / yarn.lock) committed.
+email-intelligence/frontend/node_modules/
+email-intelligence/frontend/dist/
+email-intelligence/frontend/build/
+email-intelligence/frontend/.vite/
+email-intelligence/frontend/.turbo/
+email-intelligence/frontend/.parcel-cache/
+email-intelligence/frontend/.eslintcache
+email-intelligence/frontend/.stylelintcache
+email-intelligence/frontend/npm-debug.log*
+email-intelligence/frontend/yarn-debug.log*
+email-intelligence/frontend/yarn-error.log*
+email-intelligence/frontend/pnpm-debug.log*
+email-intelligence/frontend/*.tsbuildinfo

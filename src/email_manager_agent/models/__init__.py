@@ -8,6 +8,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from .email_header import EmailHeader
+
 
 class EmailCategory(str, Enum):
     """Email category enumeration."""
@@ -76,3 +78,13 @@ class ProcessingResult(BaseModel):
     processing_time_ms: float = Field(description="Processing time in milliseconds")
     success: bool = Field(default=True, description="Whether processing succeeded")
     error: str | None = Field(default=None, description="Error message if failed")
+
+
+__all__ = [
+    "EmailCategory",
+    "ImportanceLevel",
+    "EmailMessage",
+    "EmailCategorization",
+    "ProcessingResult",
+    "EmailHeader",
+]

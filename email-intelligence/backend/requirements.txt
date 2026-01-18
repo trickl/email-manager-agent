@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+python-dotenv
+
+psycopg2-binary
+sqlalchemy
+
+qdrant-client
+
+google-api-python-client
+google-auth
+google-auth-oauthlib
+
+pydantic
+
+pydantic-settings

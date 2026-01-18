@@ -54,6 +54,24 @@ class Settings(BaseSettings):
         description="Maximum number of emails to fetch per request",
     )
 
+    gmail_scope: str = Field(
+        default="https://www.googleapis.com/auth/gmail.readonly",
+        description=(
+            "OAuth scope used for Gmail access. Use the minimum scope you need; "
+            "for indexing headers, gmail.readonly is recommended."
+        ),
+    )
+
+    # Header index configuration
+    index_db_path: Path = Field(
+        default=Path("email_index.sqlite3"),
+        description="Path to local SQLite database storing header-only email index",
+    )
+    index_batch_size: int = Field(
+        default=200,
+        description="Batch size used when upserting email headers into the index",
+    )
+
     # Application Configuration
     log_level: str = Field(
         default="INFO",
