@@ -2,6 +2,22 @@
 
 An AI-powered agent designed to automatically categorize, unsubscribe, and clean up neglected email inboxes using Ollama and Gmail API.
 
+## Important notice: personal use, privacy & liability
+
+This project was created for **personal use** and is provided **“as is”**, without warranty of any kind.
+
+Because it connects to an email account and uses AI to analyze and act on messages, it can affect highly sensitive data. If you choose to use this code (or derive from it), please do so with **extreme caution** and only after you fully understand what it does.
+
+By using this repository, you acknowledge and accept that:
+
+- It may read, process, label, move, delete, or otherwise modify email data depending on configuration and future changes.
+- AI systems can be unpredictable and may make mistakes.
+- There is a real risk of **data loss** and/or **data exposure** if misconfigured, extended, or used incorrectly.
+
+I do **not** accept liability for any damage, data loss, privacy impact, or data exposure resulting from use of this code.
+
+This repository is shared with the open-source community to **inspire and help you build your own projects**—please be mindful, protect your privacy, and apply appropriate safeguards.
+
 ## Features
 
 - 🤖 **AI-Powered Categorization**: Uses Ollama LLM for intelligent email classification
