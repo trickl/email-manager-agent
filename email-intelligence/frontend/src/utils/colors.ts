@@ -15,9 +15,15 @@ export function usefulnessScore(unreadRatio: number): number {
  */
 export function usefulnessColor(unreadRatio: number): string {
   const score = usefulnessScore(unreadRatio);
-  const hue = 120 * score; // 0 = red, 120 = green
-  const sat = 70;
-  const light = 42;
+  // Perception tweak:
+  // A linear mapping makes low-usefulness values look orange/brown for many common scores
+  // (e.g. score ~0.2 => hue ~24). We apply a mild gamma curve so "low" stays redder.
+  const gamma = 1.45;
+  const hue = 120 * Math.pow(score, gamma); // 0 = red, 120 = green
+
+  // Slightly higher saturation and lightness reads better on our dark UI.
+  const sat = 82;
+  const light = 46;
   // Use the widely supported comma-separated syntax to avoid black fallback
   // in browsers that don't support the CSS Color 4 space-separated form.
   return `hsl(${hue}, ${sat}%, ${light}%)`;

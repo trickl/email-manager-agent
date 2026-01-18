@@ -146,25 +146,33 @@ export default function HierarchyTree(props: Props) {
                   {node.name}
                 </Typography>
 
-                <Box sx={{ display: "flex", gap: 0.75, alignItems: "center", flexShrink: 0 }}>
-                  {badge && <Chip size="small" label={badge} variant="outlined" />}
-                  <Chip
-                    size="small"
-                    label={node.count}
-                    variant="outlined"
-                    title={`${node.count} messages`}
-                    sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 800 }}
-                  />
-                </Box>
+                <Chip
+                  size="small"
+                  label={node.count}
+                  variant="outlined"
+                  title={`${node.count} messages`}
+                  sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 800, flexShrink: 0 }}
+                />
               </Box>
 
-              {subtitle && (
-                <Typography
-                  variant="caption"
-                  sx={{ display: "block", color: "text.secondary", mt: 0.25 }}
+              {(badge || subtitle) && (
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 0.75,
+                    mt: 0.25,
+                    flexWrap: "wrap",
+                    minWidth: 0,
+                  }}
                 >
-                  {subtitle}
-                </Typography>
+                  {badge && <Chip size="small" label={badge} variant="outlined" />}
+                  {subtitle && (
+                    <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                      {subtitle}
+                    </Typography>
+                  )}
+                </Box>
               )}
             </Box>
           </ButtonBase>

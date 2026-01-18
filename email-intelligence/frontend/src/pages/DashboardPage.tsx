@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
+import RefreshIcon from "@mui/icons-material/Refresh";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
+import IconButton from "@mui/material/IconButton";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { api, ApiError } from "../api/client";
 import type { DashboardNode, DashboardTreeResponse } from "../api/types";
@@ -19,6 +22,7 @@ export default function DashboardPage() {
   const [selectedNodeId, setSelectedNodeId] = useState<string>("root");
   const [error, setError] = useState<string | null>(null);
   const [isLoadingTree, setIsLoadingTree] = useState<boolean>(false);
+  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(false);
 
   const isLoadingTreeRef = useRef<boolean>(false);
   const lastTreeRefreshAtRef = useRef<number>(0);
@@ -126,21 +130,45 @@ export default function DashboardPage() {
       />
 
       <SplitLayout
+        leftCollapsed={leftCollapsed}
+        onToggleLeftCollapsed={() => setLeftCollapsed(false)}
+        expandLeftLabel="Show categories"
         left={
           <Box sx={{ p: 1.5, height: "100%", overflow: "auto" }}>
             <Box sx={{ display: "flex", justifyContent: "space-between", gap: 1, alignItems: "center" }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 800, letterSpacing: 0.3 }}>
-                Hierarchy
-              </Typography>
-              <Button
-                onClick={() => loadTree()}
-                disabled={isLoadingTree}
-                size="small"
-                variant="outlined"
-                sx={{ textTransform: "none", fontWeight: 700 }}
-              >
-                Refresh
-              </Button>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}>
+                <Tooltip title={leftCollapsed ? "Show categories" : "Hide categories"}>
+                  <IconButton
+                    size="small"
+                    onClick={() => setLeftCollapsed((v) => !v)}
+                    aria-label={leftCollapsed ? "Show categories" : "Hide categories"}
+                    sx={{ border: 1, borderColor: "divider" }}
+                  >
+                    <ChevronLeftIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+
+                <Typography
+                  variant="subtitle2"
+                  sx={{ fontWeight: 800, letterSpacing: 0.3, overflow: "hidden", textOverflow: "ellipsis" }}
+                >
+                  Categories
+                </Typography>
+              </Box>
+
+              <Tooltip title="Refresh categories">
+                <span>
+                  <IconButton
+                    onClick={() => loadTree()}
+                    disabled={isLoadingTree}
+                    size="small"
+                    aria-label="Refresh categories"
+                    sx={{ border: 1, borderColor: "divider" }}
+                  >
+                    <RefreshIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
             </Box>
 
             {error && (

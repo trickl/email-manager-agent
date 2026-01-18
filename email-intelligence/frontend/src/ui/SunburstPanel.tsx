@@ -125,6 +125,9 @@ export default function SunburstPanel(props: {
 }) {
   const root = props.root;
 
+  const lowColor = usefulnessColor(1); // unread_ratio=1 => usefulness=0
+  const highColor = usefulnessColor(0); // unread_ratio=0 => usefulness=1
+
   const maxDepth = root ? defaultMaxDepthForRoot(root) : 0;
   // Hard cap per node to avoid rendering thousands of arcs/labels.
   // This mostly matters at the sender level.
@@ -141,12 +144,51 @@ export default function SunburstPanel(props: {
 
   return (
     <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          gap: 1.25,
+          flexWrap: "wrap",
+        }}
+      >
         <Typography variant="subtitle2" sx={{ fontWeight: 800, letterSpacing: 0.3 }}>
           Categorisation
         </Typography>
 
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+          <Box
+            aria-label="Usefulness legend (low value to high value)"
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: 0.75,
+              px: 1,
+              py: 0.5,
+              borderRadius: 999,
+              border: "1px solid",
+              borderColor: "divider",
+              bgcolor: "background.paper",
+            }}
+          >
+            <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 700 }}>
+              low value
+            </Typography>
+            <Box
+              sx={{
+                width: 110,
+                height: 10,
+                borderRadius: 999,
+                background: `linear-gradient(90deg, ${lowColor}, ${highColor})`,
+                border: "1px solid rgba(255,255,255,0.12)",
+              }}
+            />
+            <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 700 }}>
+              high value
+            </Typography>
+          </Box>
+
           <Button
             onClick={props.onBackToRoot}
             size="small"
