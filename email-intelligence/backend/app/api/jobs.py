@@ -29,6 +29,7 @@ from app.clustering.pipeline import cluster_and_label
 from app.ingestion.metadata_ingestion import ingest_metadata
 from app.repository.email_query_repository import count_total, count_unlabelled
 from app.repository.pipeline_kv_repository import clear_checkpoint_internal_date
+from app.repository.policy_repository import get_policy
 from app.settings import Settings
 from app.vector.qdrant import ensure_collection
 
@@ -499,6 +500,147 @@ def start_cluster_label():
             max_clusters=None,
             progress_hook=hook,
         )
+
+    _run_in_thread(job_id, task)
+    return {"job_id": job_id}
+
+
+@router.post("/policies/{policy_id}/run")
+def start_run_policy(policy_id: str, limit: int | None = None):
+    """Run a deterministic policy evaluation as a background job.
+
+    Stage 2 scope:
+    - updates Postgres lifecycle state only (no Gmail mutations)
+    - logs intended actions to the audit table
+    """
+
+    job_id = _make_job_id("policy-run")
+    job = _Job(
+        job_id=job_id,
+        type="policy_run",
+        state="queued",
+        phase="policy_evaluation",
+        started_at=_now(),
+        updated_at=_now(),
+        progress_total=None,
+        progress_processed=0,
+        counters=JobCounters(),
+        message="Queued",
+        eta_hint=None,
+    )
+    with _lock:
+        _jobs[job_id] = job
+
+    def task():
+        from datetime import timedelta
+
+        from app.db.postgres import engine
+        from app.policy.engine import select_matching_message_ids
+        from app.repository import trash_repository
+
+        rec = get_policy(engine, policy_id)
+        if rec is None:
+            raise ValueError(f"Unknown policy_id: {policy_id}")
+
+        # Select matching messages.
+        ids = select_matching_message_ids(engine, definition=rec.definition, limit=limit)
+        _set_job(job_id, total=len(ids), message=f"Selected {len(ids)} candidate messages")
+
+        # Apply action (bulk) + audit.
+        retention_days = int(rec.definition.action.retention_days)
+        trashed_at = _now()
+        expiry_at = trashed_at + timedelta(days=retention_days)
+
+        updated = trash_repository.mark_messages_trashed(
+            engine,
+            gmail_message_ids=ids,
+            policy_id=policy_id,
+            retention_days=retention_days,
+            trashed_at=trashed_at,
+        )
+
+        processed = 0
+        for mid in ids:
+            processed += 1
+            # Best-effort; we don't fetch full message snapshot yet.
+            trash_repository.log_action(
+                engine,
+                action_type="trash",
+                gmail_message_id=mid,
+                policy_id=policy_id,
+                from_state="ACTIVE",
+                to_state="TRASHED",
+                trashed_at=trashed_at,
+                expiry_at=expiry_at,
+            )
+            if processed % 50 == 0:
+                _set_job(job_id, processed=processed)
+
+        _set_job(job_id, processed=len(ids), inserted=updated)
+
+    _run_in_thread(job_id, task)
+    return {"job_id": job_id}
+
+
+@router.post("/retention/expire")
+def start_retention_expire(limit: int = 500):
+    """Expire TRASHED messages whose retention period has ended.
+
+    Stage 1 scope:
+    - transitions Postgres lifecycle_state: TRASHED -> EXPIRED
+    - does not hard-delete in Gmail/provider
+    """
+
+    limit = max(1, min(int(limit), 5000))
+
+    job_id = _make_job_id("retention-expire")
+    job = _Job(
+        job_id=job_id,
+        type="retention_expire",
+        state="queued",
+        phase="retention_expire",
+        started_at=_now(),
+        updated_at=_now(),
+        progress_total=None,
+        progress_processed=0,
+        counters=JobCounters(),
+        message="Queued",
+        eta_hint=None,
+    )
+    with _lock:
+        _jobs[job_id] = job
+
+    def task():
+        from app.db.postgres import engine
+        from app.repository import trash_repository
+
+        candidates = trash_repository.list_expired_candidates(engine, limit=limit)
+        ids = [c["gmail_message_id"] for c in candidates]
+
+        _set_job(job_id, total=len(ids), message=f"Found {len(ids)} expired candidates")
+
+        expired = trash_repository.mark_messages_expired(engine, gmail_message_ids=ids)
+
+        processed = 0
+        for c in candidates:
+            processed += 1
+            trash_repository.log_action(
+                engine,
+                action_type="expire",
+                gmail_message_id=c.get("gmail_message_id"),
+                policy_id=c.get("policy_id"),
+                from_domain=c.get("from_domain"),
+                subject=c.get("subject"),
+                internal_date=c.get("internal_date"),
+                from_state="TRASHED",
+                to_state="EXPIRED",
+                trashed_at=c.get("trashed_at"),
+                expiry_at=c.get("expiry_at"),
+            )
+            if processed % 50 == 0:
+                _set_job(job_id, processed=processed)
+
+        _set_job(job_id, processed=len(ids), inserted=expired)
 
     _run_in_thread(job_id, task)
     return {"job_id": job_id}

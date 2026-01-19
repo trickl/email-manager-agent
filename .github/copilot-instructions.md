@@ -12,14 +12,17 @@ The `README.md` contains an **Important notice: personal use, privacy & liabilit
 
 ## Email Intelligence System planning (north-star)
 
-For work under `email-intelligence/`, treat `email-intelligence/PLANNING.md` as the **target-state**
-reference document (north star).
+For work under `email-intelligence/`, treat these as **target-state reference documents (north star)**:
 
-- It is **not** an implementation guide; it defines intended end-state behaviors and UX principles.
-- Prefer changes that move the system toward the target state (metadata-first ingestion, explainable
-    clustering-first workflows, UI that never hides uncertainty).
-- If a proposed change conflicts with `email-intelligence/PLANNING.md`, update the change or explicitly
-    document why the plan is being revised.
+- `email-intelligence/PLANNING.md` — Email Intelligence dashboard UX + clustering-first discovery model.
+- `email-intelligence/TARGET_STATE_POLICY_AUTOMATION.md` — policy-driven automation engine (safe, auditable,
+  reversible actions; lifecycle states; staged rollout).
+
+- They are **not** implementation guides; they define intended end-state behaviors and UX principles.
+- Prefer changes that move the system toward the target state (metadata-first ingestion, UI that never hides
+    uncertainty, non-destructive-by-default actions with retention).
+- If a proposed change conflicts with either document, update the change or explicitly document why the plan
+    is being revised.
 
 **Email Manager Agent** is an AI-powered automation tool designed to help users manage their email inboxes more efficiently. The agent uses:
 
