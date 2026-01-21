@@ -20,25 +20,14 @@ CREATE TABLE IF NOT EXISTS email_message (
     -- Gmail label IDs (system + user labels). Represents folder/label membership.
     label_ids TEXT[],
 
+    -- Set when retention sweep archives a message (removes INBOX and adds Archive label).
+    archived_at TIMESTAMP,
+
     created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Stage 1: lifecycle state (non-destructive-by-default)
--- Source of truth lives in Postgres; provider labels/folders are not sufficient.
-ALTER TABLE email_message
-    ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'ACTIVE';
-ALTER TABLE email_message
-    ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMP;
-ALTER TABLE email_message
-    ADD COLUMN IF NOT EXISTS expiry_at TIMESTAMP;
-ALTER TABLE email_message
-    ADD COLUMN IF NOT EXISTS trashed_by_policy_id UUID;
-
-CREATE INDEX IF NOT EXISTS idx_email_lifecycle_state
-    ON email_message(lifecycle_state);
-
-CREATE INDEX IF NOT EXISTS idx_email_expiry_at
-    ON email_message(expiry_at);
+CREATE INDEX IF NOT EXISTS idx_email_archived_at
+    ON email_message(archived_at);
 
 -- Pipeline state/checkpoint (simple KV store)
 CREATE TABLE IF NOT EXISTS pipeline_kv (
@@ -82,9 +71,6 @@ ALTER TABLE email_message
 ALTER TABLE email_message
     ADD COLUMN IF NOT EXISTS cluster_id UUID;
 
-ALTER TABLE email_message
-    ADD COLUMN IF NOT EXISTS label_ids TEXT[];
-
 CREATE INDEX IF NOT EXISTS idx_email_category
     ON email_message(category);
 
@@ -107,6 +93,19 @@ CREATE TABLE IF NOT EXISTS taxonomy_label (
 
     parent_id INTEGER REFERENCES taxonomy_label(id) ON DELETE RESTRICT,
 
+    -- Retention duration in days; when an assigned label is older than this, retention sweep archives.
+    retention_days INTEGER,
+
+    -- Admin controls / safety.
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    managed_by_system BOOLEAN NOT NULL DEFAULT TRUE,
+
+    -- Gmail label mapping (kept in sync by label sync jobs).
+    gmail_label_id TEXT,
+    last_sync_at TIMESTAMP,
+    sync_status TEXT,
+    sync_error TEXT,
+
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -117,51 +116,117 @@ CREATE INDEX IF NOT EXISTS idx_taxonomy_label_parent
     ON taxonomy_label(parent_id);
 
 -- Pre-seeded Tier-1 taxonomy (enforced)
-INSERT INTO taxonomy_label (level, slug, name, description, parent_id)
+INSERT INTO taxonomy_label (level, slug, name, description, parent_id, retention_days, is_active, managed_by_system)
 VALUES
     (
         1,
         'financial',
         'Financial',
         'Records, requests, or confirmations of financial transactions or obligations.',
-        NULL
+        NULL,
+        NULL,
+        TRUE,
+        TRUE
     ),
     (
         1,
         'commercial-marketing',
         'Commercial & Marketing',
         'Influences purchasing or engagement decisions (includes legitimate newsletters and promotions).',
-        NULL
+        NULL,
+        NULL,
+        TRUE,
+        TRUE
     ),
     (
         1,
         'work-professional',
         'Work & Professional',
         'Related to employment, collaboration, or professional identity.',
-        NULL
+        NULL,
+        NULL,
+        TRUE,
+        TRUE
     ),
     (
         1,
         'personal-social',
         'Personal & Social',
         'Personal relationships, community, education, and non-billing healthcare communications.',
-        NULL
+        NULL,
+        NULL,
+        TRUE,
+        TRUE
     ),
     (
         1,
         'account-identity',
         'Account & Identity',
         'Manages access, identity, or account state (login alerts, password resets, confirmations).',
-        NULL
+        NULL,
+        NULL,
+        TRUE,
+        TRUE
     ),
     (
         1,
         'system-automated',
         'System & Automated',
         'Machine-generated state/event/failure notifications (GitHub, monitoring, CI/CD, SaaS).',
-        NULL
+        NULL,
+        NULL,
+        TRUE,
+        TRUE
     )
 ON CONFLICT (slug) DO NOTHING;
+
+-- Message->taxonomy assignment (source of truth for Gmail label sync).
+CREATE TABLE IF NOT EXISTS message_taxonomy_label (
+    message_id INTEGER NOT NULL REFERENCES email_message(id) ON DELETE CASCADE,
+    taxonomy_label_id INTEGER NOT NULL REFERENCES taxonomy_label(id) ON DELETE CASCADE,
+    assigned_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    confidence REAL,
+    PRIMARY KEY (message_id, taxonomy_label_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_taxonomy_label_taxonomy
+    ON message_taxonomy_label(taxonomy_label_id);
+
+CREATE INDEX IF NOT EXISTS idx_message_taxonomy_label_message
+    ON message_taxonomy_label(message_id);
+
+-- Gmail label push outbox for incremental sync.
+CREATE TABLE IF NOT EXISTS label_push_outbox (
+    id BIGSERIAL PRIMARY KEY,
+    message_id INTEGER NOT NULL REFERENCES email_message(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL DEFAULT 'label_assigned',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    processed_at TIMESTAMP,
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_label_push_outbox_created_at
+    ON label_push_outbox(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_label_push_outbox_processed_at
+    ON label_push_outbox(processed_at);
+
+-- Retention archive outbox (two-phase: plan in DB, then long-running Gmail push).
+CREATE TABLE IF NOT EXISTS archive_push_outbox (
+    id BIGSERIAL PRIMARY KEY,
+    message_id INTEGER NOT NULL REFERENCES email_message(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL DEFAULT 'retention_eligible',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    processed_at TIMESTAMP,
+    error TEXT,
+    UNIQUE (message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_archive_push_outbox_created_at
+    ON archive_push_outbox(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_archive_push_outbox_processed_at
+    ON archive_push_outbox(processed_at);
 
 CREATE INDEX IF NOT EXISTS idx_email_from_domain
     ON email_message(from_domain);
@@ -171,51 +236,3 @@ CREATE INDEX IF NOT EXISTS idx_email_unread
 
 CREATE INDEX IF NOT EXISTS idx_email_internal_date
     ON email_message(internal_date);
-
--- Stage 2: deterministic policy engine (rules v1)
-CREATE TABLE IF NOT EXISTS email_policy (
-    id UUID PRIMARY KEY,
-    name TEXT NOT NULL,
-    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-
-    -- 'scheduled' or 'on_ingest' (Stage 2 focuses on scheduled/batch)
-    trigger_type TEXT NOT NULL DEFAULT 'scheduled',
-    -- A human-friendly cadence hint; we start with weekly evaluation.
-    cadence TEXT NOT NULL DEFAULT 'weekly',
-
-    -- JSON config so we can evolve conditions/actions without migrations.
-    definition_json JSONB NOT NULL,
-
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_email_policy_enabled
-    ON email_policy(enabled);
-
--- Audit log for reversible actions.
-CREATE TABLE IF NOT EXISTS email_action_log (
-    id UUID PRIMARY KEY,
-    action_type TEXT NOT NULL,
-    gmail_message_id TEXT,
-    policy_id UUID,
-    status TEXT NOT NULL DEFAULT 'succeeded',
-    error TEXT,
-
-    occurred_at TIMESTAMP NOT NULL DEFAULT NOW(),
-
-    from_domain TEXT,
-    subject TEXT,
-    internal_date TIMESTAMP,
-
-    from_state TEXT,
-    to_state TEXT,
-    trashed_at TIMESTAMP,
-    expiry_at TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_email_action_log_occurred_at
-    ON email_action_log(occurred_at);
-
-CREATE INDEX IF NOT EXISTS idx_email_action_log_policy
-    ON email_action_log(policy_id);

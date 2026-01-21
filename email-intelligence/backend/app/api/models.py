@@ -67,31 +67,4 @@ class MessageSamplesResponse(BaseModel):
     node_id: str
     generated_at: datetime
     messages: list[EmailMessageSummary]
-
-
-class TrashedMessageSummary(BaseModel):
-    gmail_message_id: str
-    subject: str | None = None
-    from_domain: str
-    internal_date: datetime
-    is_unread: bool
-    category: str | None = None
-    subcategory: str | None = None
-    trashed_at: datetime | None = None
-    expiry_at: datetime | None = None
-    trashed_by_policy_id: str | None = None
-
-
-class TrashListResponse(BaseModel):
-    total: int
-    limit: int
-    offset: int
-    messages: list[TrashedMessageSummary]
-
-
-class BulkUntrashRequest(BaseModel):
-    gmail_message_ids: list[str]
-
-
-class BulkUntrashResponse(BaseModel):
-    untrashed_count: int
+    

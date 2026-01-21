@@ -357,3 +357,54 @@ def latest_internal_date(engine) -> datetime | None:
     q = text("SELECT MAX(internal_date) FROM email_message")
     with engine.begin() as conn:
         return conn.execute(q).scalar()
+
+
+def fetch_recent_domain_activity(
+    engine,
+    *,
+    from_domain: str,
+    limit: int = 30,
+) -> tuple[list[datetime], list[bool]]:
+    """Fetch recent timestamps and unread flags for a sender domain.
+
+    This is used to provide lightweight context for incremental, per-email labeling.
+    We intentionally do NOT fetch bodies here.
+
+    Args:
+        engine: SQLAlchemy engine.
+        from_domain: Sender domain to filter by.
+        limit: Max number of rows considered.
+
+    Returns:
+        (dates, is_unread_flags) ordered oldest -> newest.
+    """
+
+    from sqlalchemy import text
+
+    limit = max(1, min(int(limit), 200))
+
+    q = text(
+        """
+        SELECT internal_date, is_unread
+        FROM email_message
+        WHERE from_domain = :from_domain
+        ORDER BY internal_date DESC
+        LIMIT :limit
+        """
+    )
+
+    with engine.begin() as conn:
+        rows = conn.execute(q, {"from_domain": from_domain, "limit": limit}).fetchall()
+
+    dates: list[datetime] = []
+    unread: list[bool] = []
+    for d, u in rows:
+        if d is None:
+            continue
+        dates.append(d)
+        unread.append(bool(u))
+
+    # We queried DESC for recency; flip to ASC for frequency_label().
+    dates.reverse()
+    unread.reverse()
+    return dates, unread

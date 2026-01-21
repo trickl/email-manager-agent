@@ -4,11 +4,12 @@
 restarts), we still need idempotent schema ensures so the backend can safely evolve.
 
 This module focuses on the Email Intelligence pipeline tables/columns:
-- pipeline_kv (checkpoint + current phase)
+- pipeline_kv (checkpoints + watermarks)
 - email_cluster (cluster identity)
 - labeling columns on email_message
+- taxonomy assignment + Gmail sync outbox tables
 
-Taxonomy schema/seed is handled separately in `app.repository.taxonomy_repository`.
+Taxonomy schema/seed itself is handled separately in `app.repository.taxonomy_repository`.
 """
 
 from __future__ import annotations
@@ -63,6 +64,13 @@ def ensure_core_schema(engine) -> None:
         ALTER TABLE email_message
             ADD COLUMN IF NOT EXISTS label_ids TEXT[];
 
+        -- Hygiene: retention-driven archiving (Gmail INBOX removal + Archive label).
+        ALTER TABLE email_message
+            ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP;
+
+        CREATE INDEX IF NOT EXISTS idx_email_archived_at
+            ON email_message(archived_at);
+
         CREATE INDEX IF NOT EXISTS idx_email_category
             ON email_message(category);
 
@@ -72,71 +80,53 @@ def ensure_core_schema(engine) -> None:
         CREATE INDEX IF NOT EXISTS idx_email_label_ids
             ON email_message USING GIN(label_ids);
 
-        -- Stage 1: lifecycle state (non-destructive-by-default)
-        -- Source of truth lives in Postgres; provider labels/folders are not sufficient.
-        ALTER TABLE email_message
-            ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'ACTIVE';
-        ALTER TABLE email_message
-            ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMP;
-        ALTER TABLE email_message
-            ADD COLUMN IF NOT EXISTS expiry_at TIMESTAMP;
-        ALTER TABLE email_message
-            ADD COLUMN IF NOT EXISTS trashed_by_policy_id UUID;
+        -- Taxonomy assignment: DB is source-of-truth for message->label mapping.
+        CREATE TABLE IF NOT EXISTS message_taxonomy_label (
+            message_id INTEGER NOT NULL REFERENCES email_message(id) ON DELETE CASCADE,
+            taxonomy_label_id INTEGER NOT NULL REFERENCES taxonomy_label(id) ON DELETE CASCADE,
 
-        CREATE INDEX IF NOT EXISTS idx_email_lifecycle_state
-            ON email_message(lifecycle_state);
-        CREATE INDEX IF NOT EXISTS idx_email_expiry_at
-            ON email_message(expiry_at);
+            assigned_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            confidence REAL,
 
-        -- Stage 2: deterministic policy engine (rules v1)
-        CREATE TABLE IF NOT EXISTS email_policy (
-            id UUID PRIMARY KEY,
-            name TEXT NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            PRIMARY KEY (message_id, taxonomy_label_id)
+        );
 
-            -- 'scheduled' or 'on_ingest' (Stage 2 focuses on scheduled/batch)
-            trigger_type TEXT NOT NULL DEFAULT 'scheduled',
-            -- A human-friendly cadence hint; we start with weekly evaluation.
-            cadence TEXT NOT NULL DEFAULT 'weekly',
+        CREATE INDEX IF NOT EXISTS idx_message_taxonomy_label_taxonomy
+            ON message_taxonomy_label(taxonomy_label_id);
+        CREATE INDEX IF NOT EXISTS idx_message_taxonomy_label_message
+            ON message_taxonomy_label(message_id);
 
-            -- JSON config so we can evolve conditions/actions without migrations.
-            -- Expected shape documented in app/policy/models.py.
-            definition_json JSONB NOT NULL,
-
+        -- Gmail sync outbox: supports efficient incremental push without rescanning.
+        CREATE TABLE IF NOT EXISTS label_push_outbox (
+            id BIGSERIAL PRIMARY KEY,
+            message_id INTEGER NOT NULL REFERENCES email_message(id) ON DELETE CASCADE,
+            reason TEXT NOT NULL DEFAULT 'label_assigned',
             created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            processed_at TIMESTAMP,
+            error TEXT
         );
 
-        CREATE INDEX IF NOT EXISTS idx_email_policy_enabled
-            ON email_policy(enabled);
+        CREATE INDEX IF NOT EXISTS idx_label_push_outbox_created_at
+            ON label_push_outbox(created_at);
+        CREATE INDEX IF NOT EXISTS idx_label_push_outbox_processed_at
+            ON label_push_outbox(processed_at);
 
-        -- Audit log for reversible actions.
-        CREATE TABLE IF NOT EXISTS email_action_log (
-            id UUID PRIMARY KEY,
-            action_type TEXT NOT NULL,
-            gmail_message_id TEXT,
-            policy_id UUID,
-            status TEXT NOT NULL DEFAULT 'succeeded',
+        -- Retention archive outbox: supports a two-phase "plan then push" flow.
+        -- We keep this separate from taxonomy label push because it's a special marker label.
+        CREATE TABLE IF NOT EXISTS archive_push_outbox (
+            id BIGSERIAL PRIMARY KEY,
+            message_id INTEGER NOT NULL REFERENCES email_message(id) ON DELETE CASCADE,
+            reason TEXT NOT NULL DEFAULT 'retention_eligible',
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            processed_at TIMESTAMP,
             error TEXT,
-
-            occurred_at TIMESTAMP NOT NULL DEFAULT NOW(),
-
-            -- Snapshot of key message attributes at the time of action.
-            from_domain TEXT,
-            subject TEXT,
-            internal_date TIMESTAMP,
-
-            -- State deltas (optional, but useful for audits)
-            from_state TEXT,
-            to_state TEXT,
-            trashed_at TIMESTAMP,
-            expiry_at TIMESTAMP
+            UNIQUE (message_id)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_email_action_log_occurred_at
-            ON email_action_log(occurred_at);
-        CREATE INDEX IF NOT EXISTS idx_email_action_log_policy
-            ON email_action_log(policy_id);
+        CREATE INDEX IF NOT EXISTS idx_archive_push_outbox_created_at
+            ON archive_push_outbox(created_at);
+        CREATE INDEX IF NOT EXISTS idx_archive_push_outbox_processed_at
+            ON archive_push_outbox(processed_at);
         """
     )
 

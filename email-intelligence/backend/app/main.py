@@ -25,7 +25,6 @@ from app.repository.pipeline_kv_repository import KEY_CURRENT_PHASE
 from app.repository.pipeline_kv_repository import get_checkpoint_internal_date
 from app.repository.pipeline_kv_repository import get_kv
 from app.repository.pipeline_kv_repository import set_current_phase
-from app.repository.policy_repository import ensure_default_policies
 from app.repository.taxonomy_repository import ensure_taxonomy_seeded
 from app.settings import Settings
 from app.settings import StatusResponse
@@ -39,8 +38,8 @@ from app.gmail.client import get_gmail_service_from_files
 from app.api.dashboard import router as dashboard_router
 from app.api.jobs import router as jobs_router
 from app.api.messages import router as messages_router
-from app.api.policies import router as policies_router
-from app.api.trash import router as trash_router
+from app.api.taxonomy import router as taxonomy_router
+from app.api.gmail_sync import router as gmail_sync_router
 
 app = FastAPI(title="Email Intelligence Backend")
 
@@ -56,20 +55,17 @@ app.add_middleware(
 app.include_router(dashboard_router)
 app.include_router(jobs_router)
 app.include_router(messages_router)
-app.include_router(policies_router)
-app.include_router(trash_router)
+app.include_router(taxonomy_router)
+app.include_router(gmail_sync_router)
 
 
 @app.on_event("startup")
 def _startup() -> None:
+    # Ensure taxonomy exists first: downstream tables reference taxonomy_label via FKs.
+    ensure_taxonomy_seeded(_postgres_engine)
+
     # Ensure required schema exists even for already-initialized DB volumes.
     ensure_core_schema(_postgres_engine)
-
-    # Stage 2: seed a canonical deterministic policy (idempotent).
-    ensure_default_policies(_postgres_engine)
-
-    # Ensure our pre-seeded taxonomy exists before any ingestion starts.
-    ensure_taxonomy_seeded(_postgres_engine)
 
     # Phase 0 requirement: ensure the (empty) collection exists.
     ensure_collection()

@@ -43,8 +43,62 @@ class ClusterLabeler:
         raise NotImplementedError
 
 
-_PREFIX_RE = re.compile(r"^\s*(category|tier\s*1|tier\s*2|subcategory)\s*:\s*", re.I)
+_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"category|subcategory|"
+    r"tier\s*[-\s]*1(?:\s*category)?|"
+    r"tier\s*[-\s]*2(?:\s*subcategory)?"
+    r")\s*:\s*",
+    re.I,
+)
 _BULLET_RE = re.compile(r"^\s*(?:[-*•]+|\d+\.|\d+\))\s*")
+
+# Subcategory is allowed to extend the taxonomy, but we must not accept meta/explanatory text.
+_FORBIDDEN_SUBCATEGORY_PREFIXES = (
+    "note:",
+    "notes:",
+    "reason:",
+    "because:",
+    "explanation:",
+    "rationale:",
+)
+
+
+def _sanitize_subcategory_name(candidate: str | None) -> tuple[str | None, str | None]:
+    """Normalize and validate a Tier-2 subcategory name.
+
+    Returns:
+        (subcategory, reason)
+        - subcategory is a cleaned name or None if invalid.
+        - reason is a short string explaining why it was rejected (or None).
+    """
+
+    if candidate is None:
+        return None, None
+
+    s = str(candidate).strip()
+    if not s:
+        return None, "empty"
+
+    # Strip common prefixes that leak from model outputs.
+    s = _normalize_response_line(s)
+
+    folded = s.casefold()
+    if any(folded.startswith(p) for p in _FORBIDDEN_SUBCATEGORY_PREFIXES):
+        return None, "meta_note_prefix"
+    if "chosen categories" in folded and "match" in folded:
+        return None, "meta_explanation"
+
+    # Defensive: reject multi-line blobs.
+    if "\n" in s or "\r" in s:
+        return None, "multiline"
+
+    # Tier-2 names must be short. If they're longer than our UI/storage bound, treat this
+    # as a likely contract violation and trigger a retry upstream.
+    if len(s) > 80:
+        return None, "too_long"
+
+    return s, None
 
 
 def _normalize_response_line(line: str) -> str:
@@ -207,7 +261,7 @@ class OllamaLabeler(ClusterLabeler):
         bodies: list[str],
         tier2_options: dict[str, list[str]] | None = None,
     ) -> LabelResult:
-        prompt = build_label_prompt(
+        base_prompt = build_label_prompt(
             sender_domain=sender_domain,
             subject_examples=subject_examples,
             cluster_size=cluster_size,
@@ -217,32 +271,66 @@ class OllamaLabeler(ClusterLabeler):
             tier2_options=tier2_options,
         )
 
-        payload = json.dumps(
-            {
-                "model": self._model,
-                "prompt": prompt,
-                "stream": False,
-            }
-        ).encode("utf-8")
+        def _call_model(prompt: str) -> str:
+            payload = json.dumps(
+                {
+                    "model": self._model,
+                    "prompt": prompt,
+                    "stream": False,
+                }
+            ).encode("utf-8")
 
-        req = urllib.request.Request(
-            url=f"{self._host}/api/generate",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+            req = urllib.request.Request(
+                url=f"{self._host}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+
+            with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
+                data = json.loads(resp.read().decode("utf-8"))
+            return (data.get("response") or "").strip()
+
+        # One retry when the output looks like it violated the response contract.
+        prompt = base_prompt
+        last_reject_reason: str | None = None
+        for attempt in range(2):
+            raw = _call_model(prompt)
+            category, subcategory = _parse_multiline_label_response(raw, tier2_options=tier2_options)
+            category = validate_tier1_category(category)
+
+            cleaned_sub, reject_reason = _sanitize_subcategory_name(subcategory)
+            last_reject_reason = reject_reason
+
+            if reject_reason is None:
+                return LabelResult(category=category, subcategory=cleaned_sub)
+
+            # Retry only on first attempt; otherwise accept Tier-1-only.
+            if attempt == 0:
+                logger.warning(
+                    "labeler_subcategory_rejected_retrying",
+                    extra={"reason": reject_reason, "sender_domain": sender_domain},
+                )
+                prompt = (
+                    base_prompt
+                    + "\n\nIMPORTANT: Output EXACTLY TWO non-empty lines. "
+                    + "Do NOT include any notes, explanations, or prefixes like 'Tier-2 Subcategory:' or 'Note:'. "
+                    + "Line 2 must be either a short subcategory name or 'None'.\n"
+                )
+                continue
+
+            logger.warning(
+                "labeler_subcategory_rejected_falling_back",
+                extra={"reason": reject_reason, "sender_domain": sender_domain},
+            )
+            return LabelResult(category=category, subcategory=None)
+
+        # Should be unreachable.
+        logger.warning(
+            "labeler_unexpected_fallthrough",
+            extra={"reason": last_reject_reason, "sender_domain": sender_domain},
         )
-
-        with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
-            data = json.loads(resp.read().decode("utf-8"))
-
-        raw = (data.get("response") or "").strip()
-
-        category, subcategory = _parse_multiline_label_response(raw, tier2_options=tier2_options)
-        category = validate_tier1_category(category)
-        if subcategory is not None:
-            subcategory = str(subcategory).strip() or None
-
-        return LabelResult(category=category, subcategory=subcategory)
+        return LabelResult(category=validate_tier1_category(TIER1_CATEGORIES[0]), subcategory=None)
 
 
 def build_labeler(*, ollama_host: str | None, ollama_model: str) -> ClusterLabeler:

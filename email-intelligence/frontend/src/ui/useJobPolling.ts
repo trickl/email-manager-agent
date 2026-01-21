@@ -2,7 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
 import type { CurrentJobResponse, JobStatusResponse } from "../api/types";
 
-export type JobType = "ingest_full" | "ingest_refresh" | "cluster_label";
+export type JobType =
+  | "ingest_full"
+  | "ingest_refresh"
+  | "cluster_label"
+  | "gmail_push_bulk"
+  | "gmail_archive_push";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -208,7 +213,13 @@ export function useJobPolling(): {
         startFallbackPolling(jobId);
       }
     } else {
-      setJobStatus(null);
+      // Keep the last terminal status around so users can still see success/failure details
+      // after the job disappears from /api/jobs/current.
+      setJobStatus((prev) => {
+        if (!prev) return null;
+        if (prev.state === "succeeded" || prev.state === "failed") return prev;
+        return null;
+      });
     }
 
     return () => {
@@ -235,6 +246,18 @@ export function useJobPolling(): {
     }
     if (t === "ingest_refresh") {
       await api.startIngestRefresh();
+      const current = await api.getCurrentJob();
+      setActiveJob(current.active);
+      return;
+    }
+    if (t === "gmail_push_bulk") {
+      await api.startGmailPushBulk(200);
+      const current = await api.getCurrentJob();
+      setActiveJob(current.active);
+      return;
+    }
+    if (t === "gmail_archive_push") {
+      await api.startGmailArchivePush(200, false);
       const current = await api.getCurrentJob();
       setActiveJob(current.active);
       return;

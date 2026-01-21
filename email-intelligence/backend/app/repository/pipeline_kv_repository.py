@@ -15,6 +15,11 @@ from datetime import datetime, timezone
 KEY_LAST_INGESTED_INTERNAL_DATE = "last_ingested_internal_date"
 KEY_CURRENT_PHASE = "current_phase"
 
+# Tier-0 retention default. Stored as an integer number of days in pipeline_kv.
+# If unset, backend behavior defaults to 2 years.
+KEY_RETENTION_DEFAULT_DAYS = "retention_default_days"
+DEFAULT_RETENTION_DEFAULT_DAYS = 365 * 2
+
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -74,3 +79,29 @@ def clear_checkpoint_internal_date(engine) -> None:
 
 def set_current_phase(engine, phase: str) -> None:
     set_kv(engine, KEY_CURRENT_PHASE, phase)
+
+
+def get_retention_default_days(engine) -> int:
+    """Get the Tier-0 retention default (days).
+
+    Returns:
+        The configured default number of days, or 2 years (730) if not set.
+    """
+
+    raw = get_kv(engine, KEY_RETENTION_DEFAULT_DAYS)
+    if raw is None or str(raw).strip() == "":
+        return int(DEFAULT_RETENTION_DEFAULT_DAYS)
+
+    try:
+        n = int(str(raw).strip())
+        if n <= 0:
+            return int(DEFAULT_RETENTION_DEFAULT_DAYS)
+        return int(n)
+    except Exception:
+        return int(DEFAULT_RETENTION_DEFAULT_DAYS)
+
+
+def set_retention_default_days(engine, days: int) -> None:
+    """Set the Tier-0 retention default (days)."""
+
+    set_kv(engine, KEY_RETENTION_DEFAULT_DAYS, str(int(days)))

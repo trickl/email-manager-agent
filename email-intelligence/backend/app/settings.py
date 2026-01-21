@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     gmail_token_path: str = "token.json"
     gmail_page_size: int = 500
 
+    # OAuth UX controls (useful for Gmail label sync which requires gmail.modify scope)
+    gmail_allow_interactive: bool = True
+    gmail_auth_mode: str = "local_server"  # local_server|console
+
     @field_validator("gmail_credentials_path", "gmail_token_path", mode="before")
     @classmethod
     def _resolve_local_paths(cls, v: str) -> str:

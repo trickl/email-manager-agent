@@ -45,8 +45,16 @@ export default function TopBar(props: {
     if (!status) return "idle";
     const p = status.progress;
     if (status.state === "running" || status.state === "queued") {
-      if (p.total != null && p.total > 0) return `${p.processed}/${p.total}`;
-      return `${p.processed}`;
+      const parts: string[] = [];
+      if (p.total != null && p.total > 0) {
+        const pct = p.percent != null ? `${p.percent.toFixed(1)}%` : undefined;
+        parts.push(`${p.processed}/${p.total}`);
+        if (pct) parts.push(pct);
+      } else {
+        parts.push(`${p.processed}`);
+      }
+      if (status.eta_hint) parts.push(status.eta_hint);
+      return parts.join(" • ");
     }
     return status.state;
   })();
@@ -97,17 +105,17 @@ export default function TopBar(props: {
             </Button>
             <Button
               component={RouterLink}
-              to="/settings"
+              to="/categories"
               size="small"
               sx={{
                 textTransform: "none",
-                fontWeight: loc.pathname.startsWith("/settings") ? 800 : 600,
-                color: loc.pathname.startsWith("/settings")
+                fontWeight: loc.pathname.startsWith("/categories") ? 800 : 600,
+                color: loc.pathname.startsWith("/categories")
                   ? "text.primary"
                   : "text.secondary",
               }}
             >
-              Settings
+              Categories
             </Button>
           </Box>
 

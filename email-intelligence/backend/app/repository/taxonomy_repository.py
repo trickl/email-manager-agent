@@ -9,6 +9,7 @@ label rather than defaulting to an "Unknown" bucket.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.labeling.tier2 import TIER2_SEED, slugify, validate_tier2_seed
@@ -104,8 +105,37 @@ def ensure_taxonomy_schema(engine) -> None:
 
             parent_id INTEGER REFERENCES taxonomy_label(id) ON DELETE RESTRICT,
 
+            -- Retention duration in days; when an assigned label is older than this, retention sweep archives.
+            retention_days INTEGER,
+
+            -- Admin controls / safety.
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            managed_by_system BOOLEAN NOT NULL DEFAULT TRUE,
+
+            -- Gmail label mapping + sync metadata.
+            gmail_label_id TEXT,
+            last_sync_at TIMESTAMP,
+            sync_status TEXT,
+            sync_error TEXT,
+
             created_at TIMESTAMP DEFAULT NOW()
         );
+
+        -- Ensure columns exist for upgraded databases (idempotent).
+        ALTER TABLE taxonomy_label
+            ADD COLUMN IF NOT EXISTS retention_days INTEGER;
+        ALTER TABLE taxonomy_label
+            ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE taxonomy_label
+            ADD COLUMN IF NOT EXISTS managed_by_system BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE taxonomy_label
+            ADD COLUMN IF NOT EXISTS gmail_label_id TEXT;
+        ALTER TABLE taxonomy_label
+            ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMP;
+        ALTER TABLE taxonomy_label
+            ADD COLUMN IF NOT EXISTS sync_status TEXT;
+        ALTER TABLE taxonomy_label
+            ADD COLUMN IF NOT EXISTS sync_error TEXT;
 
         CREATE INDEX IF NOT EXISTS idx_taxonomy_label_level
             ON taxonomy_label(level);
@@ -130,8 +160,17 @@ def seed_tier1_taxonomy(engine) -> None:
 
     insert = text(
         """
-        INSERT INTO taxonomy_label (level, slug, name, description, parent_id)
-        VALUES (:level, :slug, :name, :description, NULL)
+        INSERT INTO taxonomy_label (
+            level,
+            slug,
+            name,
+            description,
+            parent_id,
+            retention_days,
+            is_active,
+            managed_by_system
+        )
+        VALUES (:level, :slug, :name, :description, NULL, NULL, TRUE, TRUE)
         ON CONFLICT (slug) DO NOTHING
         """
     )
@@ -262,6 +301,20 @@ def ensure_tier2_label(
         return
 
     sub = subcategory_name.strip()
+    if not sub:
+        return
+
+    # Guard against accidental model/meta output becoming a taxonomy label.
+    # (The primary guard is in the labeler, but this protects any caller.)
+    folded = sub.casefold()
+    if folded.startswith("note:") or folded.startswith("notes:"):
+        return
+    if "chosen categories" in folded and "match" in folded:
+        return
+
+    # Common formatting leak: "Tier-2 Subcategory: X".
+    sub = re.sub(r"^\s*tier\s*[-\s]*2\s*subcategory\s*:\s*", "", sub, flags=re.I).strip()
+    sub = re.sub(r"^\s*subcategory\s*:\s*", "", sub, flags=re.I).strip()
     if not sub:
         return
 

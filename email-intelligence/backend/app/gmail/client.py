@@ -18,13 +18,19 @@ from datetime import datetime, timezone
 from email.utils import getaddresses, parseaddr
 from typing import Iterable
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+import json
+
 
 METADATA_HEADERS: tuple[str, ...] = ("From", "To", "Cc", "Bcc", "Subject", "Date")
+
+GMAIL_SCOPE_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
+GMAIL_SCOPE_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
 
 
 @dataclass(frozen=True)
@@ -56,7 +62,23 @@ def get_gmail_service_from_files(
     """
 
     if scopes is None:
-        scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+        scopes = [GMAIL_SCOPE_READONLY]
+
+    missing_scopes: set[str] | None = None
+
+    token_file_scopes: set[str] | None = None
+    try:
+        with open(token_path, "r", encoding="utf-8") as f:
+            token_obj = json.load(f)
+        raw = token_obj.get("scopes")
+        if isinstance(raw, list):
+            token_file_scopes = {str(s) for s in raw if s}
+    except FileNotFoundError:
+        token_file_scopes = None
+    except Exception:
+        # If the token exists but we can't parse it, let the normal credential load fail
+        # and fall back to interactive auth if allowed.
+        token_file_scopes = None
 
     creds: Credentials | None = None
     try:
@@ -64,14 +86,47 @@ def get_gmail_service_from_files(
     except FileNotFoundError:
         creds = None
 
+    # If we have a token but it's missing required scopes, force a re-consent flow.
+    # This is common when you initially authorize with gmail.readonly and later need
+    # gmail.modify for label creation / message label changes.
+    if creds and scopes:
+        requested = set(scopes)
+
+        # IMPORTANT: Credentials.from_authorized_user_file(..., scopes=...) can set
+        # creds.scopes to the *requested* scopes even if the underlying refresh token
+        # was granted fewer scopes. Prefer the scopes recorded in token.json.
+        granted = set(token_file_scopes or (creds.scopes or []))
+
+        # Gmail scopes are not strictly hierarchical strings, but for our usage we can
+        # treat gmail.modify as a practical superset of gmail.readonly.
+        if requested == {GMAIL_SCOPE_READONLY} and GMAIL_SCOPE_MODIFY in granted:
+            requested = granted
+
+        if not requested.issubset(granted):
+            missing_scopes = requested - granted
+            creds = None
+
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except RefreshError:
+            # Often caused by scope changes (e.g. requesting gmail.modify with a token
+            # minted for gmail.readonly). Fall back to interactive auth if allowed.
+            creds = None
 
     if not creds or not creds.valid:
         if not allow_interactive:
+            if missing_scopes:
+                granted_str = ", ".join(sorted(token_file_scopes or [])) or "<none>"
+                missing_str = ", ".join(sorted(missing_scopes))
+                raise RuntimeError(
+                    "Gmail OAuth token is missing required scopes and interactive auth is disabled. "
+                    f"Granted scopes in token.json: {granted_str}. Missing: {missing_str}. "
+                    "Re-authorize with the required scopes (e.g. gmail.modify) to update token.json."
+                )
             raise RuntimeError(
                 "Gmail OAuth token is missing/invalid and interactive auth is disabled. "
-                "Run an ingestion job once to complete OAuth and create token.json."
+                "Re-authorize to create/update token.json."
             )
 
         # Interactive local auth flow (creates/updates token file)
@@ -265,3 +320,58 @@ def list_label_names(service, *, user_id: str = "me") -> dict[str, str]:
         if lid and name:
             out[str(lid)] = str(name)
     return out
+
+
+def list_labels(service, *, user_id: str = "me") -> list[dict]:
+    """Return all Gmail labels as raw dicts."""
+
+    resp = service.users().labels().list(userId=user_id).execute()
+    return list(resp.get("labels", []) or [])
+
+
+def label_name_to_id(service, *, user_id: str = "me") -> dict[str, str]:
+    """Return a mapping of Gmail label name -> label id."""
+
+    labels = list_labels(service, user_id=user_id)
+    out: dict[str, str] = {}
+    for l in labels:
+        lid = l.get("id")
+        name = l.get("name")
+        if lid and name:
+            out[str(name)] = str(lid)
+    return out
+
+
+def create_label(service, *, name: str, user_id: str = "me") -> dict:
+    """Create a Gmail label and return the created label resource."""
+
+    body = {"name": name, "labelListVisibility": "labelShow", "messageListVisibility": "show"}
+    return service.users().labels().create(userId=user_id, body=body).execute()
+
+
+def update_label(service, *, label_id: str, name: str, user_id: str = "me") -> dict:
+    """Update (rename) an existing Gmail label."""
+
+    body = {"id": label_id, "name": name}
+    return service.users().labels().update(userId=user_id, id=label_id, body=body).execute()
+
+
+def modify_message_labels(
+    service,
+    *,
+    message_id: str,
+    add_label_ids: list[str] | None = None,
+    remove_label_ids: list[str] | None = None,
+    user_id: str = "me",
+) -> dict:
+    """Add/remove labels on a Gmail message.
+
+    Note: Gmail "archive" semantics are implemented by removing the INBOX label.
+    """
+
+    body: dict[str, list[str]] = {}
+    if add_label_ids:
+        body["addLabelIds"] = list(add_label_ids)
+    if remove_label_ids:
+        body["removeLabelIds"] = list(remove_label_ids)
+    return service.users().messages().modify(userId=user_id, id=message_id, body=body).execute()

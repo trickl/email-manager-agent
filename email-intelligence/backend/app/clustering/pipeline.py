@@ -24,10 +24,11 @@ from app.repository.email_query_repository import insert_cluster
 from app.repository.email_query_repository import label_emails_in_cluster
 from app.repository.email_query_repository import update_cluster_analysis
 from app.repository.email_query_repository import update_cluster_label
+from app.repository.pipeline_kv_repository import set_current_phase
+from app.repository.taxonomy_assignment_repository import upsert_message_taxonomy_assignment
 from app.repository.taxonomy_repository import ensure_taxonomy_seeded
 from app.repository.taxonomy_repository import ensure_tier2_label
 from app.repository.taxonomy_repository import list_tier2_options
-from app.repository.pipeline_kv_repository import set_current_phase
 from app.vector.embedding import build_embedding_text
 from app.vector.qdrant import get_vector_for_gmail_message_id
 from app.vector.qdrant import query_similar
@@ -307,6 +308,16 @@ def cluster_and_label(
             subcategory=subcategory,
             label_version=label_version,
         )
+
+        # Persist taxonomy assignment + enqueue outbox for each message in the cluster.
+        for e in cluster_emails:
+            upsert_message_taxonomy_assignment(
+                engine=engine,
+                gmail_message_id=e.gmail_message_id,
+                category=category,
+                subcategory=subcategory,
+                confidence=None,
+            )
         update_cluster_label(
             engine=engine,
             cluster_id=cluster_uuid,
