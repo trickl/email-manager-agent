@@ -321,6 +321,44 @@ def _gmail_total_estimate(service, *, user_id: str, q: str | None) -> int | None
         return None
 
 
+def _gmail_count_messages(service, *, user_id: str, q: str | None, page_size: int = 500) -> int | None:
+    """Count matching Gmail messages by paging users.messages.list.
+
+    Gmail's resultSizeEstimate can be quite inaccurate for some queries. For long-running
+    destructive-ish jobs we prefer an exact pre-count so progress indicators remain sane.
+    """
+
+    if page_size < 1:
+        page_size = 1
+    if page_size > 500:
+        page_size = 500
+
+    try:
+        total = 0
+        page_token: str | None = None
+        while True:
+            resp = (
+                service.users()
+                .messages()
+                .list(
+                    userId=user_id,
+                    maxResults=int(page_size),
+                    includeSpamTrash=True,
+                    q=q,
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+
+            msgs = resp.get("messages", []) or []
+            total += len(msgs)
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                return int(total)
+    except Exception:
+        return None
+
+
 @router.post("/ingest/full")
 def start_ingest_full():
     settings = Settings()
@@ -481,6 +519,128 @@ def start_cluster_label():
         service = get_gmail_service_from_files(
             credentials_path=settings.gmail_credentials_path,
             token_path=settings.gmail_token_path,
+        )
+
+        def hook(*, clusters_done: int, emails_labeled: int, message: str | None):
+            _set_job(
+                job_id,
+                phase="cluster_label",
+                processed=emails_labeled,
+                inserted=emails_labeled,
+                message=message,
+            )
+
+        cluster_and_label(
+            engine=engine,
+            service=service,
+            user_id=settings.gmail_user_id,
+            similarity_threshold=settings.similarity_threshold,
+            label_version=settings.label_version,
+            ollama_host=settings.ollama_host,
+            ollama_model=settings.ollama_model,
+            max_clusters=None,
+            progress_hook=hook,
+        )
+
+    _run_in_thread(job_id, task)
+    return {"job_id": job_id}
+
+
+@router.post("/label/auto")
+def start_label_auto(threshold: int = 200):
+    """Automatically label unlabelled emails using a simple heuristic.
+
+    Heuristic:
+      - if unlabelled < threshold: label each email individually (incremental-style)
+      - else: cluster and label in bulk
+
+    This is a long-running job and reports progress via /api/jobs polling + SSE.
+    """
+
+    if threshold < 1 or threshold > 50_000:
+        raise HTTPException(status_code=400, detail="threshold must be between 1 and 50000")
+
+    settings = Settings()
+    job_id = _make_job_id("label-auto")
+    job = _Job(
+        job_id=job_id,
+        type="label_auto",
+        state="queued",
+        phase="label_auto",
+        started_at=_now(),
+        updated_at=_now(),
+        progress_total=None,
+        progress_processed=0,
+        counters=JobCounters(),
+        message="Queued",
+        eta_hint=None,
+    )
+    with _lock:
+        _jobs[job_id] = job
+
+    def task():
+        from app.db.postgres import engine
+        from app.gmail.client import GMAIL_SCOPE_READONLY, get_gmail_service_from_files
+
+        ensure_collection()
+
+        total = count_unlabelled(engine)
+        _set_job(job_id, total=int(total))
+
+        if total <= 0:
+            _set_job(job_id, phase="label_auto", processed=0, inserted=0, failed=0, message="No unlabelled emails")
+            return
+
+        # We only need read access for body sampling; do not request gmail.modify here.
+        service = get_gmail_service_from_files(
+            credentials_path=settings.gmail_credentials_path,
+            token_path=settings.gmail_token_path,
+            scopes=[GMAIL_SCOPE_READONLY],
+            auth_mode=settings.gmail_auth_mode,
+            # Background jobs must not block waiting for OAuth consent.
+            allow_interactive=False,
+        )
+
+        if int(total) < int(threshold):
+            _set_job(
+                job_id,
+                phase="incremental_label",
+                message=f"Auto: {total} < {threshold} → labeling individually",
+            )
+
+            def hook(
+                *,
+                emails_processed: int,
+                emails_labeled: int,
+                emails_failed: int,
+                message: str | None,
+            ):
+                _set_job(
+                    job_id,
+                    phase="incremental_label",
+                    processed=emails_labeled,
+                    inserted=emails_labeled,
+                    failed=emails_failed,
+                    message=message,
+                )
+
+            label_unlabelled_individual(
+                engine=engine,
+                service=service,
+                user_id=settings.gmail_user_id,
+                similarity_threshold=settings.similarity_threshold,
+                label_version=settings.label_version,
+                ollama_host=settings.ollama_host,
+                ollama_model=settings.ollama_model,
+                max_emails=None,
+                progress_hook=hook,
+            )
+            return
+
+        _set_job(
+            job_id,
+            phase="cluster_label",
+            message=f"Auto: {total} ≥ {threshold} → clustering + bulk labeling",
         )
 
         def hook(*, clusters_done: int, emails_labeled: int, message: str | None):
@@ -699,6 +859,227 @@ def start_gmail_push_bulk(batch_size: int = 200):
             raise RuntimeError(
                 f"Gmail push completed with {failed} failures. "
                 "This usually means transient Gmail/API/network errors; re-run the job to resume."
+            )
+
+    _run_in_thread(job_id, task)
+    return {"job_id": job_id}
+
+
+@router.post("/gmail/push/outbox")
+def start_gmail_push_outbox(batch_size: int = 250):
+    """Push taxonomy labels to Gmail for messages currently in label_push_outbox.
+
+    This is the background-job equivalent of /api/gmail-sync/messages/push-incremental.
+    It drains the outbox table in batches and records per-row errors.
+    """
+
+    if batch_size < 1 or batch_size > 2000:
+        raise HTTPException(status_code=400, detail="batch_size must be between 1 and 2000")
+
+    settings = Settings()
+    job_id = _make_job_id("gmail-push-outbox")
+    job = _Job(
+        job_id=job_id,
+        type="gmail_push_outbox",
+        state="queued",
+        phase="gmail_push_outbox",
+        started_at=_now(),
+        updated_at=_now(),
+        progress_total=None,
+        progress_processed=0,
+        counters=JobCounters(),
+        message="Queued",
+        eta_hint=None,
+    )
+    with _lock:
+        _jobs[job_id] = job
+
+    def task():
+        from sqlalchemy import text
+
+        from app.db.postgres import engine
+        from app.gmail.client import GMAIL_SCOPE_MODIFY, get_gmail_service_from_files, modify_message_labels
+        from googleapiclient.errors import HttpError
+
+        service = get_gmail_service_from_files(
+            credentials_path=settings.gmail_credentials_path,
+            token_path=settings.gmail_token_path,
+            scopes=[GMAIL_SCOPE_MODIFY],
+            auth_mode=settings.gmail_auth_mode,
+            # Background jobs must not block waiting for OAuth consent.
+            allow_interactive=False,
+        )
+
+        with engine.begin() as conn:
+            total = conn.execute(
+                text("SELECT COUNT(*) FROM label_push_outbox WHERE processed_at IS NULL")
+            ).scalar()
+
+        if total is not None:
+            _set_job(
+                job_id,
+                total=int(total),
+                message=f"Starting outbox push for ~{int(total)} message(s)",
+            )
+
+        processed = 0
+        succeeded = 0
+        failed = 0
+        batch_num = 0
+
+        q_fetch = text(
+            """
+            SELECT o.id, o.message_id, em.gmail_message_id
+            FROM label_push_outbox o
+            JOIN email_message em ON em.id = o.message_id
+            WHERE o.processed_at IS NULL
+              AND em.gmail_message_id IS NOT NULL
+            ORDER BY o.created_at ASC
+            LIMIT :limit
+            """
+        )
+
+        q_tids = text(
+            """
+            SELECT mtl.taxonomy_label_id
+            FROM message_taxonomy_label mtl
+            JOIN taxonomy_label tl ON tl.id = mtl.taxonomy_label_id
+            WHERE mtl.message_id = :mid AND tl.is_active = TRUE
+            """
+        )
+
+        q_label_rows = text(
+            """
+            SELECT id, gmail_label_id
+            FROM taxonomy_label
+            WHERE id = ANY(:ids)
+            """
+        )
+
+        q_mark_ok = text(
+            """
+            UPDATE label_push_outbox
+            SET processed_at = NOW(), error = NULL
+            WHERE id = :id
+            """
+        )
+
+        q_mark_err = text(
+            """
+            UPDATE label_push_outbox
+            SET processed_at = NOW(), error = :error
+            WHERE id = :id
+            """
+        )
+
+        while True:
+            with engine.begin() as conn:
+                outbox = conn.execute(q_fetch, {"limit": int(batch_size)}).mappings().all()
+
+            if not outbox:
+                break
+
+            batch_num += 1
+            for o in outbox:
+                outbox_id = int(o["id"])
+                message_id = int(o["message_id"])
+                gmail_message_id = str(o["gmail_message_id"])
+
+                processed += 1
+                try:
+                    with engine.begin() as conn:
+                        tids = conn.execute(q_tids, {"mid": int(message_id)}).fetchall()
+                        tset = [int(r[0]) for r in tids]
+                        label_rows = conn.execute(q_label_rows, {"ids": list(tset)}).fetchall()
+                        taxonomy_to_gmail = {
+                            int(r[0]): str(r[1])
+                            for r in label_rows
+                            if r[1] is not None and str(r[1]).strip()
+                        }
+
+                    add_ids = [taxonomy_to_gmail.get(tid) for tid in tset]
+                    add_ids = [x for x in add_ids if x]
+                    if not add_ids:
+                        raise RuntimeError("missing gmail label mapping for message")
+
+                    modify_message_labels(
+                        service,
+                        message_id=gmail_message_id,
+                        add_label_ids=add_ids,
+                        remove_label_ids=None,
+                        user_id=settings.gmail_user_id,
+                    )
+
+                    with engine.begin() as conn:
+                        conn.execute(q_mark_ok, {"id": int(outbox_id)})
+
+                    succeeded += 1
+                except HttpError as he:
+                    status = getattr(getattr(he, "resp", None), "status", None)
+                    if status in {429, 500, 502, 503, 504}:
+                        try:
+                            time.sleep(0.25)
+                            modify_message_labels(
+                                service,
+                                message_id=gmail_message_id,
+                                add_label_ids=add_ids,
+                                remove_label_ids=None,
+                                user_id=settings.gmail_user_id,
+                            )
+                            with engine.begin() as conn:
+                                conn.execute(q_mark_ok, {"id": int(outbox_id)})
+                            succeeded += 1
+                            continue
+                        except Exception as e:
+                            failed += 1
+                            with engine.begin() as conn:
+                                conn.execute(q_mark_err, {"id": int(outbox_id), "error": str(e)[:5000]})
+                            continue
+
+                    failed += 1
+                    with engine.begin() as conn:
+                        conn.execute(q_mark_err, {"id": int(outbox_id), "error": str(he)[:5000]})
+                except Exception as e:
+                    failed += 1
+                    with engine.begin() as conn:
+                        conn.execute(q_mark_err, {"id": int(outbox_id), "error": str(e)[:5000]})
+
+                if processed % 50 == 0:
+                    _set_job(
+                        job_id,
+                        phase="gmail_push_outbox",
+                        processed=processed,
+                        inserted=succeeded,
+                        failed=failed,
+                        message=(
+                            f"Pushing outbox… batch {batch_num} (ok {succeeded}, failed {failed})"
+                        ),
+                    )
+
+            _set_job(
+                job_id,
+                phase="gmail_push_outbox",
+                processed=processed,
+                inserted=succeeded,
+                failed=failed,
+                message=f"Completed batch {batch_num} (ok {succeeded}, failed {failed})",
+            )
+
+            time.sleep(0.05)
+
+        _set_job(
+            job_id,
+            phase="gmail_push_outbox",
+            processed=processed,
+            inserted=succeeded,
+            failed=failed,
+            message=f"Finished outbox push: processed {processed}, ok {succeeded}, failed {failed}",
+        )
+
+        if failed > 0:
+            raise RuntimeError(
+                f"Outbox push completed with {failed} failures. "
+                "Re-run to retry failed rows; completed rows have been marked processed."
             )
 
     _run_in_thread(job_id, task)
@@ -968,7 +1349,7 @@ def start_gmail_archive_trash(
         from app.gmail.client import (
             GMAIL_SCOPE_MODIFY,
             get_gmail_service_from_files,
-            label_name_to_id,
+            list_labels,
             modify_message_labels,
             move_message_to_trash,
         )
@@ -977,6 +1358,8 @@ def start_gmail_archive_trash(
         # Prefer the configured marker label name, but accept fallbacks.
         candidate_label_names = [
             GMAIL_ARCHIVED_LABEL_NAME,
+            # Common variant seen in UIs / Takeout labeling.
+            "Email archive",
             # User preference / future intent (note: Gmail may reject creating these names,
             # but we can still act on them if they already exist).
             "Archive",
@@ -995,16 +1378,26 @@ def start_gmail_archive_trash(
             allow_interactive=False,
         )
 
-        name_to_id = label_name_to_id(service, user_id=settings.gmail_user_id)
+        labels = list_labels(service, user_id=settings.gmail_user_id)
+        name_to_id: dict[str, str] = {}
+        for l in labels:
+            lid = l.get("id")
+            nm = l.get("name")
+            if lid and nm:
+                name_to_id[str(nm)] = str(lid)
+
+        # Case-insensitive matching helps when users end up with both
+        # "Email Archive" and "Email archive".
+        candidate_cf = {str(nm).casefold() for nm in candidate_label_names}
+        matched_names: list[str] = []
+        for nm in name_to_id.keys():
+            if str(nm).casefold() in candidate_cf:
+                matched_names.append(str(nm))
+
         archive_label_name: str | None = None
         archive_label_id: str | None = None
-        for nm in candidate_label_names:
-            if nm in name_to_id:
-                archive_label_name = nm
-                archive_label_id = str(name_to_id[nm])
-                break
 
-        if not archive_label_name:
+        if not matched_names:
             # Keep the error short but actionable.
             available = sorted(name_to_id.keys())
             hint = ", ".join(available[:25])
@@ -1015,12 +1408,36 @@ def start_gmail_archive_trash(
                 f"Available labels: {hint}{more}"
             )
 
+        # If multiple variants exist (case differences), pick the one with the largest
+        # current non-trash membership.
+        best_name: str | None = None
+        best_total: int | None = None
+        for nm in matched_names:
+            q_try = f'-in:trash label:"{nm}"'
+            n = _gmail_count_messages(service, user_id=settings.gmail_user_id, q=q_try)
+            if n is None:
+                continue
+            if best_total is None or n > best_total:
+                best_total = n
+                best_name = nm
+
+        archive_label_name = best_name or matched_names[0]
+        archive_label_id = str(name_to_id.get(archive_label_name)) if archive_label_name else None
+
+        if not archive_label_name:
+            raise RuntimeError("Could not resolve archive label name")
+
         # Only operate on non-trashed messages to avoid re-processing.
         q = f'-in:trash label:"{archive_label_name}"'
 
-        total = _gmail_total_estimate(service, user_id=settings.gmail_user_id, q=q)
+        # Prefer an exact pre-count so progress remains meaningful.
+        _set_job(job_id, message=f"Counting messages with label '{archive_label_name}'…")
+        total = _gmail_count_messages(service, user_id=settings.gmail_user_id, q=q)
+        if total is None:
+            # Fall back to Gmail's estimate if counting fails for any reason.
+            total = _gmail_total_estimate(service, user_id=settings.gmail_user_id, q=q)
         if total is not None:
-            _set_job(job_id, total=int(total))
+            _set_job(job_id, total=int(total), message=f"Found ~{int(total)} message(s) to move to Trash")
 
         processed = 0
         succeeded = 0

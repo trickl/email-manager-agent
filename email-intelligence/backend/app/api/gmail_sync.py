@@ -56,6 +56,11 @@ class PushIncrementalRequest(BaseModel):
     limit: int = Field(default=200, ge=1, le=5000)
 
 
+class PushOutboxStatusResponse(BaseModel):
+    pending_outbox: int
+    generated_at: datetime
+
+
 class RetentionPreviewRequest(BaseModel):
     limit: int = Field(default=25, ge=1, le=200)
 
@@ -542,6 +547,23 @@ def push_labels_incremental(req: PushIncrementalRequest) -> PushResponse:
         attempted=attempted,
         succeeded=succeeded,
         failed=failed,
+        generated_at=datetime.now(timezone.utc),
+    )
+
+
+@router.get("/messages/push-outbox/status", response_model=PushOutboxStatusResponse)
+def push_outbox_status() -> PushOutboxStatusResponse:
+    """Return the number of pending label push outbox rows."""
+
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        pending = conn.execute(
+            text("SELECT COUNT(*) FROM label_push_outbox WHERE processed_at IS NULL")
+        ).scalar()
+
+    return PushOutboxStatusResponse(
+        pending_outbox=int(pending or 0),
         generated_at=datetime.now(timezone.utc),
     )
 

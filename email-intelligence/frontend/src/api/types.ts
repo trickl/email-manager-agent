@@ -140,3 +140,18 @@ export interface RetentionPlanResponse {
 export interface RetentionDefaultResponse {
   retention_default_days: number;
 }
+
+export interface StatusResponse {
+  current_phase?: string | null;
+  total_email_count: number;
+  labelled_email_count: number;
+  unlabelled_email_count: number;
+  cluster_count: number;
+  estimated_remaining_clusters: number;
+  last_ingested_internal_date?: string | null;
+}
+
+export interface PushOutboxStatusResponse {
+  pending_outbox: number;
+  generated_at: string;
+}

@@ -31,10 +31,6 @@ function chipColor(
 export default function TopBar(props: {
   title: string;
   jobStatus: JobStatusResponse | null;
-  disabled: boolean;
-  onIngestFull: () => void;
-  onIngestRefresh: () => void;
-  onClusterLabel: () => void;
 }) {
   const loc = useLocation();
   const { mode, toggleMode } = useColorMode();
@@ -47,9 +43,16 @@ export default function TopBar(props: {
     if (status.state === "running" || status.state === "queued") {
       const parts: string[] = [];
       if (p.total != null && p.total > 0) {
-        const pct = p.percent != null ? `${p.percent.toFixed(1)}%` : undefined;
-        parts.push(`${p.processed}/${p.total}`);
-        if (pct) parts.push(pct);
+        // Gmail / backend may provide only a rough total estimate. If it becomes inconsistent
+        // (processed > total), avoid showing a misleading fraction/percent.
+        if (p.processed <= p.total) {
+          const pct = p.percent != null ? `${p.percent.toFixed(1)}%` : undefined;
+          parts.push(`${p.processed}/${p.total}`);
+          if (pct) parts.push(pct);
+        } else {
+          parts.push(`${p.processed} processed`);
+          parts.push(`est ${p.total}`);
+        }
       } else {
         parts.push(`${p.processed}`);
       }
@@ -145,37 +148,6 @@ export default function TopBar(props: {
         </Box>
 
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexShrink: 0 }}>
-          <Button
-            onClick={props.onIngestFull}
-            disabled={props.disabled}
-            size="small"
-            variant="outlined"
-            title="Ingest metadata from Gmail (full)"
-            sx={{ textTransform: "none", fontWeight: 700 }}
-          >
-            Ingest (Full)
-          </Button>
-          <Button
-            onClick={props.onIngestRefresh}
-            disabled={props.disabled}
-            size="small"
-            variant="outlined"
-            title="Ingest metadata since checkpoint"
-            sx={{ textTransform: "none", fontWeight: 700 }}
-          >
-            Ingest (Refresh)
-          </Button>
-          <Button
-            onClick={props.onClusterLabel}
-            disabled={props.disabled}
-            size="small"
-            variant="contained"
-            title="Cluster + label existing messages"
-            sx={{ textTransform: "none", fontWeight: 800 }}
-          >
-            Cluster + Label
-          </Button>
-
           <Tooltip title={`Switch to ${mode === "light" ? "dark" : "light"} theme`}>
             <IconButton
               onClick={toggleMode}

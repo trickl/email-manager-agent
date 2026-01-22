@@ -4,11 +4,13 @@ import type {
   DashboardTreeResponse,
   JobStatusResponse,
   MessageSamplesResponse,
+  PushOutboxStatusResponse,
   PushResponse,
   RetentionPreviewResponse,
   RetentionRunResponse,
   RetentionDefaultResponse,
   RetentionPlanResponse,
+  StatusResponse,
   SyncExistenceResponse,
   TaxonomyLabel,
 } from "./types";
@@ -50,6 +52,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getStatus: () => request<StatusResponse>("/status"),
+
   getDashboardTree: () => request<DashboardTreeResponse>("/api/dashboard/tree"),
 
   getMessageSamples: (nodeId: string, limit: number = 25) =>
@@ -65,9 +69,21 @@ export const api = {
   startClusterLabel: () =>
     request<{ job_id: string }>("/api/jobs/cluster-label/run", { method: "POST" }),
 
+  startLabelAuto: (threshold: number = 200) =>
+    request<{ job_id: string }>(
+      `/api/jobs/label/auto?threshold=${encodeURIComponent(String(threshold))}`,
+      { method: "POST" }
+    ),
+
   startGmailPushBulk: (batchSize: number = 200) =>
     request<{ job_id: string }>(
       `/api/jobs/gmail/push/bulk?batch_size=${encodeURIComponent(String(batchSize))}`,
+      { method: "POST" }
+    ),
+
+  startGmailPushOutbox: (batchSize: number = 250) =>
+    request<{ job_id: string }>(
+      `/api/jobs/gmail/push/outbox?batch_size=${encodeURIComponent(String(batchSize))}`,
       { method: "POST" }
     ),
 
@@ -78,6 +94,24 @@ export const api = {
       )}&dry_run=${encodeURIComponent(String(dryRun))}`,
       { method: "POST" }
     ),
+
+  startGmailArchiveTrash: (opts?: {
+    batch_size?: number;
+    dry_run?: boolean;
+    remove_archive_label?: boolean;
+  }) => {
+    const batchSize = opts?.batch_size ?? 250;
+    const dryRun = Boolean(opts?.dry_run);
+    const removeArchive = Boolean(opts?.remove_archive_label);
+    return request<{ job_id: string }>(
+      `/api/jobs/gmail/archive/trash?batch_size=${encodeURIComponent(
+        String(batchSize)
+      )}&dry_run=${encodeURIComponent(String(dryRun))}&remove_archive_label=${encodeURIComponent(
+        String(removeArchive)
+      )}`,
+      { method: "POST" }
+    );
+  },
 
   getCurrentJob: () => request<CurrentJobResponse>("/api/jobs/current"),
   getJobStatus: (jobId: string) => request<JobStatusResponse>(`/api/jobs/${jobId}/status`),
@@ -125,6 +159,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ dry_run: dryRun }),
     }),
+
+  getGmailPushOutboxStatus: () =>
+    request<PushOutboxStatusResponse>("/api/gmail-sync/messages/push-outbox/status"),
+
   pushGmailLabelsBulk: (limit: number = 200, offset: number = 0) =>
     request<PushResponse>("/api/gmail-sync/messages/push-bulk", {
       method: "POST",

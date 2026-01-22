@@ -1,5 +1,8 @@
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import Accordion from "@mui/material/Accordion";
+import AccordionDetails from "@mui/material/AccordionDetails";
+import AccordionSummary from "@mui/material/AccordionSummary";
 import Alert from "@mui/material/Alert";
 import Autocomplete from "@mui/material/Autocomplete";
 import Box from "@mui/material/Box";
@@ -675,10 +678,6 @@ export default function CategoriesPage() {
       <TopBar
         title="Email Intelligence"
         jobStatus={jobStatus}
-        onIngestFull={() => startJob("ingest_full")}
-        onIngestRefresh={() => startJob("ingest_refresh")}
-        onClusterLabel={() => startJob("cluster_label")}
-        disabled={disabled}
       />
 
       <Box sx={{ p: 2 }}>
@@ -817,39 +816,64 @@ export default function CategoriesPage() {
           </Stack>
         </Paper>
 
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 2 }}>
-          <Button variant="outlined" onClick={onSyncLabels} disabled={actionDisabled}>
-            Sync Gmail labels (create/rename)
-          </Button>
-          <Button variant="outlined" onClick={onPushIncremental} disabled={actionDisabled}>
-            Push to Gmail (incremental)
-          </Button>
-          <Button variant="outlined" onClick={onPushBulk} disabled={actionDisabled}>
-            Push to Gmail (bulk)
-          </Button>
-          <Button
-            variant="outlined"
-            color="warning"
-            onClick={onPushBulkJob}
-            disabled={actionDisabled}
-          >
-            Push to Gmail (bulk job)
-          </Button>
-          <Button variant="outlined" onClick={onRetentionPreview}>
-            Retention preview
-          </Button>
-          <Button color="primary" variant="outlined" onClick={onRetentionPlan} disabled={actionDisabled}>
-            Plan archive candidates
-          </Button>
-          <Button
-            color="warning"
-            variant="contained"
-            onClick={onArchivePushJob}
-            disabled={actionDisabled}
-          >
-            Push Email Archive label (job)
-          </Button>
-          <Box sx={{ display: "flex", alignItems: "center", px: 1 }}>
+        <Accordion variant="outlined" sx={{ mb: 2 }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Box>
+              <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>
+                Advanced tools
+              </Typography>
+              <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                Gmail sync / bulk actions / retention planning.
+              </Typography>
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1 }}>
+              <Button variant="outlined" onClick={onSyncLabels} disabled={actionDisabled}>
+                Sync Gmail labels
+              </Button>
+              <Button variant="outlined" onClick={onPushIncremental} disabled={actionDisabled}>
+                Push to Gmail (incremental)
+              </Button>
+              <Button variant="outlined" onClick={onPushBulk} disabled={actionDisabled}>
+                Push to Gmail (bulk page)
+              </Button>
+              <Button
+                variant="outlined"
+                color="warning"
+                onClick={onPushBulkJob}
+                disabled={actionDisabled}
+              >
+                Push to Gmail (bulk job)
+              </Button>
+              <Button variant="outlined" onClick={onRetentionPreview}>
+                Retention preview
+              </Button>
+              <Button
+                color="primary"
+                variant="outlined"
+                onClick={onRetentionPlan}
+                disabled={actionDisabled}
+              >
+                Plan archive candidates
+              </Button>
+              <Button
+                color="warning"
+                variant="outlined"
+                onClick={onArchivePushJob}
+                disabled={actionDisabled}
+              >
+                Push Email Archive label (job)
+              </Button>
+            </Stack>
+          </AccordionDetails>
+        </Accordion>
+
+        {(retentionChanges.invalidIds.length > 0 ||
+          retentionSaveError ||
+          retentionSaving ||
+          retentionChanges.items.length > 0) && (
+          <Box sx={{ display: "flex", alignItems: "center", px: 1, mb: 2 }}>
             {retentionChanges.invalidIds.length > 0 ? (
               <Typography variant="caption" sx={{ color: "error.main" }}>
                 Retention: invalid value(s)
@@ -873,17 +897,13 @@ export default function CategoriesPage() {
               <Typography variant="caption" sx={{ color: "text.secondary" }}>
                 Saving retention…
               </Typography>
-            ) : retentionChanges.items.length > 0 ? (
+            ) : (
               <Typography variant="caption" sx={{ color: "text.secondary" }}>
                 Will auto-save retention…
               </Typography>
-            ) : (
-              <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                Retention saved
-              </Typography>
             )}
           </Box>
-        </Stack>
+        )}
 
         {lastSyncExistence && (
           <Alert severity={lastSyncExistence.errors > 0 ? "warning" : "success"} sx={{ mb: 2 }}>

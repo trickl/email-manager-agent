@@ -1,3 +1,7 @@
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import Accordion from "@mui/material/Accordion";
+import AccordionDetails from "@mui/material/AccordionDetails";
+import AccordionSummary from "@mui/material/AccordionSummary";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -51,9 +55,13 @@ export default function SettingsPage() {
   const { jobStatus, startJob, activeJob } = useJobPolling();
   const disabled = activeJob?.state === "running" || activeJob?.state === "queued";
 
+  const [actionBusy, setActionBusy] = useState(false);
+  const actionsDisabled = disabled || actionBusy;
+
   const [labels, setLabels] = useState<TaxonomyLabel[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -135,45 +143,61 @@ export default function SettingsPage() {
     }
   }
 
-  async function onSyncLabels() {
-    setError(null);
-    try {
-      await api.syncGmailLabelExistence(false);
-      await refresh();
-    } catch (e: any) {
-      setError(e?.bodyText ?? e?.message ?? "Gmail label sync failed");
-    }
-  }
-
-  async function onPushIncremental() {
-    setError(null);
-    try {
-      await api.pushGmailLabelsIncremental(200);
-    } catch (e: any) {
-      setError(e?.bodyText ?? e?.message ?? "Incremental push failed");
-    }
-  }
-
-  async function onPushBulk() {
-    setError(null);
-    try {
-      await api.pushGmailLabelsBulk(200, 0);
-    } catch (e: any) {
-      setError(e?.bodyText ?? e?.message ?? "Bulk push failed");
-    }
-  }
-
-  async function onPushBulkJob() {
+  async function onPushLabelsToGmailAuto() {
     const ok = window.confirm(
-      "Start a background Gmail bulk push job now? You can watch progress in the top bar (percent + ETA)."
+      "Apply taxonomy labels to Gmail now?\n\nThis will first sync Gmail label existence, then push pending label updates."
     );
     if (!ok) return;
 
     setError(null);
+    setNotice(null);
+    setActionBusy(true);
     try {
-      await startJob("gmail_push_bulk");
+      await api.syncGmailLabelExistence(false);
+
+      const outbox = await api.getGmailPushOutboxStatus();
+      const pending = outbox.pending_outbox ?? 0;
+
+      if (pending <= 0) {
+        setNotice("No pending label updates to push to Gmail (outbox is empty).");
+        return;
+      }
+
+      if (pending < 200) {
+        const resp = await api.pushGmailLabelsIncremental(200);
+        setNotice(
+          `Pushed label updates (incremental): attempted ${resp.attempted}, ok ${resp.succeeded}, failed ${resp.failed}.`
+        );
+        return;
+      }
+
+      await startJob("gmail_push_outbox");
+      setNotice(
+        `Started background outbox push job for ~${pending} pending update(s). Watch progress in the top bar.`
+      );
     } catch (e: any) {
-      setError(e?.bodyText ?? e?.message ?? "Failed to start Gmail push job");
+      setError(e?.bodyText ?? e?.message ?? "Failed to apply labels to Gmail");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function onArchiveTrashJob() {
+    const ok = window.confirm(
+      "Move all messages labeled with the archive marker label to Gmail Trash now?\n\nThis is reversible until Trash is emptied (or auto-deleted after ~30 days)."
+    );
+    if (!ok) return;
+
+    setError(null);
+    setNotice(null);
+    setActionBusy(true);
+    try {
+      await startJob("gmail_archive_trash");
+      setNotice("Started archive→trash job. Watch progress in the top bar.");
+    } catch (e: any) {
+      setError(e?.bodyText ?? e?.message ?? "Failed to start archive-trash job");
+    } finally {
+      setActionBusy(false);
     }
   }
 
@@ -207,19 +231,15 @@ export default function SettingsPage() {
       <TopBar
         title="Email Intelligence"
         jobStatus={jobStatus}
-        onIngestFull={() => startJob("ingest_full")}
-        onIngestRefresh={() => startJob("ingest_refresh")}
-        onClusterLabel={() => startJob("cluster_label")}
-        disabled={disabled}
       />
       <Box sx={{ p: 2 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 2 }}>
           <Box sx={{ flex: 1 }}>
             <Typography variant="h6" sx={{ fontWeight: 900, mb: 0.25 }}>
-              Taxonomy & Gmail Label Sync
+              Taxonomy
             </Typography>
             <Typography variant="body2" sx={{ color: "text.secondary" }}>
-              Manage taxonomy labels, sync them to Gmail, and run retention-based archiving.
+              Manage your taxonomy labels. Advanced maintenance actions are available below if needed.
             </Typography>
             <Typography variant="body2" sx={{ mt: 0.5 }}>
               <Link component={RouterLink} to="/" underline="hover">
@@ -243,33 +263,57 @@ export default function SettingsPage() {
           </Alert>
         )}
 
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 2 }}>
-          <Button variant="outlined" onClick={onSyncLabels}>
-            Sync Gmail label existence
-          </Button>
-          <Button variant="outlined" onClick={onPushIncremental}>
-            Push labels (incremental)
-          </Button>
-          <Button variant="outlined" onClick={onPushBulk}>
-            Push labels (bulk)
-          </Button>
-          <Button color="warning" variant="outlined" onClick={onPushBulkJob}>
-            Push labels (bulk job)
-          </Button>
-          <Button variant="outlined" onClick={onRetentionPreview}>
-            Retention preview
-          </Button>
-          <Button color="warning" variant="contained" onClick={onRetentionRun}>
-            Run retention (archive)
-          </Button>
-        </Stack>
-
-        {retentionPreview && (
-          <Alert severity="info" sx={{ mb: 2 }}>
-            Eligible for archive: <b>{retentionPreview.eligible_count}</b> (showing sample of{" "}
-            {retentionPreview.sample.length}).
+        {notice && (
+          <Alert severity="info" sx={{ mb: 2, whiteSpace: "pre-wrap" }}>
+            {notice}
           </Alert>
         )}
+
+        <Accordion variant="outlined" sx={{ mb: 2 }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Box>
+              <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>
+                Maintenance & advanced actions
+              </Typography>
+              <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                Usually you can ignore this section.
+              </Typography>
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 2 }}>
+              <Button variant="outlined" onClick={onPushLabelsToGmailAuto} disabled={actionsDisabled}>
+                Apply labels to Gmail
+              </Button>
+              <Button variant="outlined" onClick={onRetentionPreview} disabled={actionsDisabled}>
+                Retention preview
+              </Button>
+              <Button
+                color="warning"
+                variant="outlined"
+                onClick={onRetentionRun}
+                disabled={actionsDisabled}
+              >
+                Run retention (archive)
+              </Button>
+              <Button
+                color="error"
+                variant="outlined"
+                onClick={onArchiveTrashJob}
+                disabled={actionsDisabled}
+              >
+                Trash archived mail
+              </Button>
+            </Stack>
+
+            {retentionPreview && (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                Eligible for archive: <b>{retentionPreview.eligible_count}</b> (showing sample of{" "}
+                {retentionPreview.sample.length}).
+              </Alert>
+            )}
+          </AccordionDetails>
+        </Accordion>
 
         <Paper variant="outlined" sx={{ overflow: "auto" }}>
           <Table size="small" stickyHeader>

@@ -16,6 +16,7 @@ import HierarchyTree from "../ui/HierarchyTree";
 import SunburstPanel from "../ui/SunburstPanel";
 import DetailPanel from "../ui/DetailPanel";
 import { useJobPolling } from "../ui/useJobPolling";
+import PrimaryActionsBar from "../ui/PrimaryActionsBar";
 
 export default function DashboardPage() {
   const [tree, setTree] = useState<DashboardTreeResponse | null>(null);
@@ -123,11 +124,11 @@ export default function DashboardPage() {
       <TopBar
         title="Email Intelligence"
         jobStatus={jobStatus}
-        onIngestFull={() => startJob("ingest_full")}
-        onIngestRefresh={() => startJob("ingest_refresh")}
-        onClusterLabel={() => startJob("cluster_label")}
-        disabled={jobDisabled}
       />
+
+      <Box sx={{ px: 1.5, pt: 1.5 }}>
+        <PrimaryActionsBar disabled={jobDisabled} startJob={startJob} />
+      </Box>
 
       <SplitLayout
         leftCollapsed={leftCollapsed}

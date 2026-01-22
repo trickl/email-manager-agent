@@ -6,8 +6,11 @@ export type JobType =
   | "ingest_full"
   | "ingest_refresh"
   | "cluster_label"
+  | "label_auto"
   | "gmail_push_bulk"
-  | "gmail_archive_push";
+  | "gmail_push_outbox"
+  | "gmail_archive_push"
+  | "gmail_archive_trash";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -250,14 +253,32 @@ export function useJobPolling(): {
       setActiveJob(current.active);
       return;
     }
+    if (t === "label_auto") {
+      await api.startLabelAuto(200);
+      const current = await api.getCurrentJob();
+      setActiveJob(current.active);
+      return;
+    }
     if (t === "gmail_push_bulk") {
       await api.startGmailPushBulk(200);
       const current = await api.getCurrentJob();
       setActiveJob(current.active);
       return;
     }
+    if (t === "gmail_push_outbox") {
+      await api.startGmailPushOutbox(250);
+      const current = await api.getCurrentJob();
+      setActiveJob(current.active);
+      return;
+    }
     if (t === "gmail_archive_push") {
       await api.startGmailArchivePush(200, false);
+      const current = await api.getCurrentJob();
+      setActiveJob(current.active);
+      return;
+    }
+    if (t === "gmail_archive_trash") {
+      await api.startGmailArchiveTrash({ batch_size: 250, dry_run: false, remove_archive_label: false });
       const current = await api.getCurrentJob();
       setActiveJob(current.active);
       return;

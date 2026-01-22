@@ -15,10 +15,6 @@ export default function JobsPage() {
       <TopBar
         title="Email Intelligence"
         jobStatus={jobStatus}
-        onIngestFull={() => startJob("ingest_full")}
-        onIngestRefresh={() => startJob("ingest_refresh")}
-        onClusterLabel={() => startJob("cluster_label")}
-        disabled={disabled}
       />
       <Box sx={{ p: 2 }}>
         <Typography variant="h6" sx={{ fontWeight: 900, mb: 0.75 }}>
