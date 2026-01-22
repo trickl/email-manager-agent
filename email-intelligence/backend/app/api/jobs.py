@@ -48,6 +48,7 @@ class _Job:
     progress_processed: int
     counters: JobCounters
     message: str | None
+    error_samples: list[str]
     eta_hint: str | None
 
 
@@ -199,6 +200,33 @@ def _set_job(
             pass
 
 
+def _add_job_error(job_id: str, sample: str, *, limit: int = 20) -> None:
+    """Attach a small number of error samples to a job.
+
+    This is meant for UI/debug visibility ("why did it fail?") without requiring
+    access to server logs.
+    """
+
+    if not sample:
+        return
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return
+        job.error_samples.append(sample)
+        if limit > 0 and len(job.error_samples) > int(limit):
+            job.error_samples = job.error_samples[-int(limit) :]
+        job.updated_at = _now()
+
+        # Push best-effort update (non-fatal).
+        try:
+            status = _as_response(job)
+            payload = json.dumps(jsonable_encoder(status))
+            _broadcast(job_id, payload)
+        except Exception:
+            pass
+
+
 def _as_response(job: _Job) -> JobStatusResponse:
     percent = None
     if job.progress_total and job.progress_total > 0:
@@ -214,6 +242,7 @@ def _as_response(job: _Job) -> JobStatusResponse:
         progress=JobProgress(total=job.progress_total, processed=job.progress_processed, percent=percent),
         counters=job.counters,
         message=job.message,
+        error_samples=list(job.error_samples) if job.error_samples else None,
         eta_hint=job.eta_hint,
     )
 
@@ -232,6 +261,22 @@ def current_job() -> CurrentJobResponse:
     if not job:
         return CurrentJobResponse(active=None)
     return CurrentJobResponse(active={"job_id": job.job_id, "type": job.type, "state": job.state})
+
+
+@router.get("/recent", response_model=list[JobStatusResponse])
+def recent_jobs(limit: int = 25) -> list[JobStatusResponse]:
+    """Return a small list of recent jobs (including failed ones).
+
+    The in-memory job runner only exposes the active job via /current. For debugging
+    and UX, it's useful to see the latest jobs without requiring the UI to persist
+    job ids.
+    """
+
+    limit = max(1, min(int(limit), 200))
+    with _lock:
+        jobs = list(_jobs.values())
+    jobs.sort(key=lambda j: j.started_at, reverse=True)
+    return [_as_response(j) for j in jobs[:limit]]
 
 
 @router.get("/{job_id}/status", response_model=JobStatusResponse)
@@ -374,6 +419,7 @@ def start_ingest_full():
         progress_processed=0,
         counters=JobCounters(),
         message="Queued",
+        error_samples=[],
         eta_hint=None,
     )
     with _lock:
@@ -434,6 +480,7 @@ def start_ingest_refresh():
         progress_processed=0,
         counters=JobCounters(),
         message="Queued",
+        error_samples=[],
         eta_hint=None,
     )
     with _lock:
@@ -502,6 +549,7 @@ def start_cluster_label():
         progress_processed=0,
         counters=JobCounters(),
         message="Queued",
+        error_samples=[],
         eta_hint=None,
     )
     with _lock:
@@ -573,6 +621,7 @@ def start_label_auto(threshold: int = 200):
         progress_processed=0,
         counters=JobCounters(),
         message="Queued",
+        error_samples=[],
         eta_hint=None,
     )
     with _lock:
@@ -697,6 +746,7 @@ def start_gmail_push_bulk(batch_size: int = 200):
         progress_processed=0,
         counters=JobCounters(),
         message="Queued",
+        error_samples=[],
         eta_hint=None,
     )
     with _lock:
@@ -889,6 +939,7 @@ def start_gmail_push_outbox(batch_size: int = 250):
         progress_processed=0,
         counters=JobCounters(),
         message="Queued",
+        error_samples=[],
         eta_hint=None,
     )
     with _lock:
@@ -1116,6 +1167,7 @@ def start_gmail_archive_push(batch_size: int = 200, dry_run: bool = False):
         progress_processed=0,
         counters=JobCounters(),
         message="Queued",
+        error_samples=[],
         eta_hint=None,
     )
     with _lock:
@@ -1338,6 +1390,7 @@ def start_gmail_archive_trash(
         progress_processed=0,
         counters=JobCounters(),
         message="Queued",
+        error_samples=[],
         eta_hint=None,
     )
     with _lock:
@@ -1444,6 +1497,42 @@ def start_gmail_archive_trash(
         failed = 0
         batch_num = 0
 
+        def http_error_summary(err: HttpError) -> str:
+            """Make a compact, UI-safe description of a Gmail HttpError."""
+
+            status = getattr(getattr(err, "resp", None), "status", None)
+            status_str = str(status) if status is not None else "?"
+
+            # Try to pull structured details from the error payload.
+            reason: str | None = None
+            try:
+                raw = getattr(err, "content", None)
+                if isinstance(raw, (bytes, bytearray)):
+                    payload = json.loads(raw.decode("utf-8", errors="replace"))
+                elif isinstance(raw, str):
+                    payload = json.loads(raw)
+                else:
+                    payload = None
+
+                if isinstance(payload, dict):
+                    e = payload.get("error")
+                    if isinstance(e, dict):
+                        # Prefer the human message; include the first machine reason if present.
+                        msg = e.get("message")
+                        errors = e.get("errors")
+                        if isinstance(errors, list) and errors:
+                            first = errors[0]
+                            if isinstance(first, dict) and first.get("reason"):
+                                reason = f"{first.get('reason')}: {msg}" if msg else str(first.get("reason"))
+                        if reason is None and msg:
+                            reason = str(msg)
+            except Exception:
+                reason = None
+
+            if reason:
+                return f"HttpError {status_str}: {reason}"
+            return f"HttpError {status_str}"
+
         def fetch_batch_ids() -> list[str]:
             resp = (
                 service.users()
@@ -1496,6 +1585,7 @@ def start_gmail_archive_trash(
                     succeeded += 1
                 except HttpError as he:
                     status = getattr(getattr(he, "resp", None), "status", None)
+                    _add_job_error(job_id, f"{mid}: {http_error_summary(he)}")
                     if (not dry_run) and status in {429, 500, 502, 503, 504}:
                         # Simple best-effort retry.
                         try:
@@ -1513,12 +1603,14 @@ def start_gmail_archive_trash(
                                 )
                             succeeded += 1
                             continue
-                        except Exception:
+                        except Exception as retry_exc:  # noqa: BLE001
+                            _add_job_error(job_id, f"{mid}: retry_failed: {type(retry_exc).__name__}: {retry_exc}")
                             failed += 1
                             continue
 
                     failed += 1
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
+                    _add_job_error(job_id, f"{mid}: {type(exc).__name__}: {exc}")
                     failed += 1
 
                 if processed % 50 == 0:
@@ -1553,11 +1645,167 @@ def start_gmail_archive_trash(
             message=f"Finished: processed {processed}, ok {succeeded}, failed {failed}",
         )
 
+        # Do not mark the job as failed purely because of partial per-message failures.
+        # For large batches it's common to see a small number of transient 4xx/5xx errors.
         if failed > 0:
-            raise RuntimeError(
-                f"Archive trash completed with {failed} failures. "
-                "Re-run the job to retry; it is safe and will skip messages already in Trash."
+            _set_job(
+                job_id,
+                message=(
+                    f"Finished with {failed} failure(s). "
+                    "Re-run to retry; already-trashed messages will be skipped. "
+                    "See error_samples for details."
+                ),
             )
+
+    _run_in_thread(job_id, task)
+    return {"job_id": job_id}
+
+
+@router.post("/gmail/trash/sync")
+def start_gmail_trash_sync(
+    batch_size: int = 500,
+    q: str = "in:trash",
+):
+    """Sync Gmail Trash membership into the DB.
+
+    The dashboard reads counts from Postgres. If emails are moved to Trash in Gmail
+    *after* they've been ingested, the DB's label_ids will be stale until a full
+    re-ingest (which we want to avoid).
+
+    This job lists message ids matching a Gmail query (default: in:trash) and updates
+    the corresponding email_message rows to include the TRASH label id.
+
+    Args:
+        batch_size: Gmail list page size (1..500).
+        q: Gmail search query to sync. Defaults to "in:trash".
+    """
+
+    if batch_size < 1 or batch_size > 500:
+        raise HTTPException(status_code=400, detail="batch_size must be between 1 and 500")
+
+    settings = Settings()
+    job_id = _make_job_id("gmail-trash-sync")
+    job = _Job(
+        job_id=job_id,
+        type="gmail_trash_sync",
+        state="queued",
+        phase="gmail_trash_sync",
+        started_at=_now(),
+        updated_at=_now(),
+        progress_total=None,
+        progress_processed=0,
+        counters=JobCounters(),
+        message="Queued",
+        error_samples=[],
+        eta_hint=None,
+    )
+    with _lock:
+        _jobs[job_id] = job
+
+    def task():
+        from sqlalchemy import text
+
+        from app.db.postgres import engine
+        from app.gmail.client import GMAIL_SCOPE_MODIFY, get_gmail_service_from_files
+
+        service = get_gmail_service_from_files(
+            credentials_path=settings.gmail_credentials_path,
+            token_path=settings.gmail_token_path,
+            # Use gmail.modify so we can reuse an existing token.json minted with modify.
+            # In practice this also covers read-only access, and avoids refresh issues
+            # when the token was consented with modify only.
+            scopes=[GMAIL_SCOPE_MODIFY],
+            auth_mode=settings.gmail_auth_mode,
+            # Background jobs must not block waiting for OAuth consent.
+            allow_interactive=False,
+        )
+
+        _set_job(job_id, message=f"Counting Gmail messages matching query: {q!r}…")
+        total = _gmail_count_messages(service, user_id=settings.gmail_user_id, q=q)
+        if total is None:
+            total = _gmail_total_estimate(service, user_id=settings.gmail_user_id, q=q)
+        if total is not None:
+            _set_job(job_id, total=int(total), message=f"Found ~{int(total)} message(s) to sync")
+
+        update_sql = text(
+            """
+            UPDATE email_message
+            SET label_ids = ARRAY(
+                SELECT DISTINCT unnest(COALESCE(label_ids, ARRAY[]::text[]) || ARRAY['TRASH'])
+            )
+            WHERE gmail_message_id = ANY(:gmail_ids)
+            """
+        )
+
+        processed = 0
+        updated = 0
+        failed = 0
+        page_token: str | None = None
+        batch_num = 0
+
+        while True:
+            resp = (
+                service.users()
+                .messages()
+                .list(
+                    userId=settings.gmail_user_id,
+                    maxResults=int(batch_size),
+                    includeSpamTrash=True,
+                    q=q,
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+
+            msgs = resp.get("messages", []) or []
+            ids = [str(m.get("id")) for m in msgs if m.get("id")]
+
+            if ids:
+                batch_num += 1
+                processed += len(ids)
+                try:
+                    with engine.begin() as conn:
+                        rc = conn.execute(update_sql, {"gmail_ids": ids}).rowcount
+                    updated += int(rc or 0)
+                except Exception as exc:  # noqa: BLE001
+                    failed += len(ids)
+                    _add_job_error(job_id, f"batch {batch_num}: {type(exc).__name__}: {exc}")
+
+                # Reuse counters fields to communicate useful info:
+                # - inserted: rows updated in DB
+                # - skipped_existing: scanned ids not present in DB
+                skipped = max(0, processed - updated)
+                _set_job(
+                    job_id,
+                    phase="gmail_trash_sync",
+                    processed=processed,
+                    inserted=updated,
+                    skipped_existing=skipped,
+                    failed=failed,
+                    message=(
+                        f"Syncing Trash labels… batch {batch_num} "
+                        f"(scanned {processed}, updated {updated}, missing {skipped}, failed {failed})"
+                    ),
+                )
+
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+
+            time.sleep(0.05)
+
+        skipped = max(0, processed - updated)
+        _set_job(
+            job_id,
+            phase="gmail_trash_sync",
+            processed=processed,
+            inserted=updated,
+            skipped_existing=skipped,
+            failed=failed,
+            message=(
+                f"Finished Trash sync: scanned {processed}, updated {updated}, missing {skipped}, failed {failed}"
+            ),
+        )
 
     _run_in_thread(job_id, task)
     return {"job_id": job_id}
@@ -1593,6 +1841,7 @@ def start_incremental_run(max_messages: int | None = None, max_emails: int | Non
         progress_processed=0,
         counters=JobCounters(),
         message="Queued",
+        error_samples=[],
         eta_hint=None,
     )
     with _lock:

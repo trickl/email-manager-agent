@@ -44,6 +44,9 @@ class JobStatusResponse(BaseModel):
     progress: JobProgress
     counters: JobCounters
     message: str | None = None
+    # Best-effort error detail for jobs that may partially succeed.
+    # Kept intentionally small (sampled) to avoid returning huge payloads.
+    error_samples: list[str] | None = None
     eta_hint: str | None = None
 
 

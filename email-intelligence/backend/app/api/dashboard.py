@@ -56,6 +56,7 @@ def dashboard_tree():
             COUNT(*)::int AS count,
             SUM(CASE WHEN is_unread THEN 1 ELSE 0 END)::int AS unread_count
         FROM email_message
+        WHERE NOT ('TRASH' = ANY(COALESCE(label_ids, ARRAY[]::text[])))
         GROUP BY 1, 2, 3, 4
         """
     )

@@ -18,7 +18,13 @@ class EmailRow:
 def count_total(engine) -> int:
     from sqlalchemy import text
 
-    q = text("SELECT COUNT(*) FROM email_message")
+    q = text(
+        """
+        SELECT COUNT(*)
+        FROM email_message
+        WHERE NOT ('TRASH' = ANY(COALESCE(label_ids, ARRAY[]::text[])))
+        """
+    )
     with engine.begin() as conn:
         return int(conn.execute(q).scalar() or 0)
 
@@ -26,7 +32,14 @@ def count_total(engine) -> int:
 def count_labelled(engine) -> int:
     from sqlalchemy import text
 
-    q = text("SELECT COUNT(*) FROM email_message WHERE category IS NOT NULL")
+    q = text(
+        """
+        SELECT COUNT(*)
+        FROM email_message
+        WHERE category IS NOT NULL
+          AND NOT ('TRASH' = ANY(COALESCE(label_ids, ARRAY[]::text[])))
+        """
+    )
     with engine.begin() as conn:
         return int(conn.execute(q).scalar() or 0)
 
@@ -34,7 +47,14 @@ def count_labelled(engine) -> int:
 def count_unlabelled(engine) -> int:
     from sqlalchemy import text
 
-    q = text("SELECT COUNT(*) FROM email_message WHERE category IS NULL")
+    q = text(
+        """
+        SELECT COUNT(*)
+        FROM email_message
+        WHERE category IS NULL
+          AND NOT ('TRASH' = ANY(COALESCE(label_ids, ARRAY[]::text[])))
+        """
+    )
     with engine.begin() as conn:
         return int(conn.execute(q).scalar() or 0)
 
@@ -88,6 +108,7 @@ def fetch_next_unlabelled(engine) -> EmailRow | None:
             cluster_id
         FROM email_message
         WHERE category IS NULL
+                    AND NOT ('TRASH' = ANY(COALESCE(label_ids, ARRAY[]::text[])))
         ORDER BY internal_date ASC, gmail_message_id ASC
         LIMIT 1
         """
@@ -177,6 +198,7 @@ def fetch_unlabelled_by_domain(engine, *, from_domain: str, limit: int = 2000) -
         FROM email_message
         WHERE category IS NULL
           AND from_domain = :from_domain
+                    AND NOT ('TRASH' = ANY(COALESCE(label_ids, ARRAY[]::text[])))
         ORDER BY internal_date ASC, gmail_message_id ASC
         LIMIT :limit
         """

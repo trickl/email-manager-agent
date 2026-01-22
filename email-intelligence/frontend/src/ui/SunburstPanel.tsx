@@ -7,7 +7,108 @@ import Typography from "@mui/material/Typography";
 import { animated } from "@react-spring/web";
 import type { MouseEvent } from "react";
 import type { DashboardNode } from "../api/types";
-import { usefulnessColor } from "../utils/colors";
+import { clamp01 } from "../utils/colors";
+
+type UnreadRange = {
+  bestUnread: number; // lower is better
+  worstUnread: number; // higher is worse
+};
+
+function _collectUnreadRatiosTier1(root: SunburstDatum): number[] {
+  // We rescale based on the visible top-level segments (children of the current root).
+  // This avoids deeper nodes dominating the range and keeps the view intuitive.
+  const ratios: number[] = [];
+  for (const c of root.children ?? []) {
+    if (c.is_pending) continue;
+    const r = Number.isFinite(c.unread_ratio) ? clamp01(c.unread_ratio) : 0.5;
+    ratios.push(r);
+  }
+  return ratios;
+}
+
+function _computeUnreadRange(root: SunburstDatum): UnreadRange {
+  const ratios = _collectUnreadRatiosTier1(root);
+  if (ratios.length === 0) {
+    return { bestUnread: 0, worstUnread: 1 };
+  }
+  let best = 1;
+  let worst = 0;
+  for (const r of ratios) {
+    if (r < best) best = r;
+    if (r > worst) worst = r;
+  }
+
+  // Ensure we always have some spread for color differentiation.
+  // Without this, if all categories are ~equally unread, everything looks identical.
+  const minSpan = 0.08;
+  if (worst - best < minSpan) {
+    const mid = (best + worst) / 2;
+    best = clamp01(mid - minSpan / 2);
+    worst = clamp01(mid + minSpan / 2);
+  }
+
+  return { bestUnread: best, worstUnread: worst };
+}
+
+function _hsl(hue: number): string {
+  const sat = 82;
+  const light = 46;
+  return `hsl(${hue}, ${sat}%, ${light}%)`;
+}
+
+function makeAdaptiveUnreadColorScale(root: SunburstDatum): {
+  range: UnreadRange;
+  colorForUnreadRatio: (unreadRatio: number) => string;
+  legendLowColor: string;
+  legendHighColor: string;
+} {
+  const range = _computeUnreadRange(root);
+
+  // Pick a hue band based on the absolute unread ratios.
+  // Goal: keep semantics (high unread never looks "good") while still showing differences.
+  // - If everything is very unread, use red -> orange.
+  // - If everything is mostly read, use yellow-green -> green.
+  // - Otherwise, use the full red -> green range.
+  const { bestUnread, worstUnread } = range;
+  const midUnread = (bestUnread + worstUnread) / 2;
+  // Use the midpoint heuristic so that cases like [0.52 .. 0.88] still map to a
+  // "bad" band (red/orange) rather than making the "best" category look green.
+  const allVeryUnread = midUnread >= 0.65;
+  const allMostlyRead = midUnread <= 0.35;
+
+  // Hue endpoints (0=red, 120=green)
+  let hueWorst = 0;
+  let hueBest = 120;
+  if (allVeryUnread) {
+    hueWorst = 0;
+    hueBest = 32; // orange-ish
+  } else if (allMostlyRead) {
+    hueWorst = 85; // yellow-green
+    hueBest = 120;
+  }
+
+  // Mild perception tweak: keep low usefulness looking redder.
+  // (Same idea as usefulnessColor(), but for an adaptive hue band.)
+  const gamma = 1.35;
+
+  const colorForUnreadRatio = (unreadRatio: number): string => {
+    const r = Number.isFinite(unreadRatio) ? clamp01(unreadRatio) : 0.5;
+    const span = Math.max(1e-6, worstUnread - bestUnread);
+
+    // p=0 is worst, p=1 is best within the current view.
+    const p = clamp01((worstUnread - r) / span);
+    const t = Math.pow(p, gamma);
+    const hue = hueWorst + (hueBest - hueWorst) * t;
+    return _hsl(hue);
+  };
+
+  return {
+    range,
+    colorForUnreadRatio,
+    legendLowColor: colorForUnreadRatio(worstUnread),
+    legendHighColor: colorForUnreadRatio(bestUnread),
+  };
+}
 
 type SunburstDatum = {
   /**
@@ -20,6 +121,15 @@ type SunburstDatum = {
   key: string;
   id: string;
   name: string;
+  /**
+   * True message count for this node as reported by the backend.
+   * Note: this is already aggregated for non-leaf nodes.
+   */
+  count: number;
+  /**
+   * Chart weight used by the sunburst layout.
+   * We intentionally set this only on leaves to avoid double-counting.
+   */
   value: number;
   unread_ratio: number;
   frequency?: string | null;
@@ -108,6 +218,7 @@ function toDatum(
         key: otherKey,
         id: "", // synthetic aggregate: not selectable
         name: otherLabel,
+        count: Math.max(0, tailCount),
         value: Math.max(0, tailCount),
         unread_ratio: tailRatio,
         frequency: null,
@@ -117,11 +228,20 @@ function toDatum(
     }
   }
 
+  const count = Math.max(0, n.count);
+  // Nivo computes node totals by summing `value` up the tree.
+  // Our backend already provides aggregated `count` at every internal node.
+  // If we set `value=count` for internal nodes, totals get double-counted
+  // (parent + children), which is exactly how you end up with tooltips like
+  // Financial=5568 when the true count is 1856.
+  const value = children && children.length > 0 ? 0 : count;
+
   return {
     key,
     id: n.id,
     name: n.name,
-    value: Math.max(0, n.count),
+    count,
+    value,
     unread_ratio: n.unread_ratio,
     frequency: n.frequency ?? null,
     is_pending: isPending,
@@ -139,8 +259,8 @@ export default function SunburstPanel(props: {
 }) {
   const root = props.root;
 
-  const lowColor = usefulnessColor(1); // unread_ratio=1 => usefulness=0
-  const highColor = usefulnessColor(0); // unread_ratio=0 => usefulness=1
+  const chartData = root ? toDatum(root, { maxDepth: defaultMaxDepthForRoot(root), maxChildren: 120 }) : null;
+  const colorScale = chartData ? makeAdaptiveUnreadColorScale(chartData) : null;
 
   const maxDepth = root ? defaultMaxDepthForRoot(root) : 0;
   // Hard cap per node to avoid rendering thousands of arcs/labels.
@@ -155,6 +275,16 @@ export default function SunburstPanel(props: {
     props.totalEmailCount > 0 ? (props.unprocessedEmailCount / props.totalEmailCount) * 100 : 0;
   const showUnprocessedPct = props.totalEmailCount > 0 && unprocessedPct > 5;
   const unprocessedPctText = `${unprocessedPct.toFixed(1)}%`;
+
+  const legendWorstUnreadPct = colorScale
+    ? `${Math.round(colorScale.range.worstUnread * 100)}% unread`
+    : "100% unread";
+  const legendBestUnreadPct = colorScale
+    ? `${Math.round(colorScale.range.bestUnread * 100)}% unread`
+    : "0% unread";
+
+  const lowColor = colorScale ? colorScale.legendLowColor : "hsl(0, 82%, 46%)";
+  const highColor = colorScale ? colorScale.legendHighColor : "hsl(120, 82%, 46%)";
 
   return (
     <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
@@ -187,7 +317,7 @@ export default function SunburstPanel(props: {
             }}
           >
             <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 700 }}>
-              low value
+              {legendWorstUnreadPct}
             </Typography>
             <Box
               sx={{
@@ -199,7 +329,7 @@ export default function SunburstPanel(props: {
               }}
             />
             <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 700 }}>
-              high value
+              {legendBestUnreadPct}
             </Typography>
           </Box>
 
@@ -302,7 +432,7 @@ export default function SunburstPanel(props: {
             </Box>
 
             <ResponsiveSunburst
-              data={toDatum(root, { maxDepth, maxChildren })}
+              data={chartData}
               id={(d: any) => String((d as any).key)}
               value="value"
               margin={{ top: 10, right: 10, bottom: 10, left: 10 }}
@@ -312,7 +442,9 @@ export default function SunburstPanel(props: {
               colors={(d: any) => {
                 const data = d.data as any;
                 if (data?.is_pending) return "#9ca3af";
-                return usefulnessColor(data?.unread_ratio);
+                return colorScale
+                  ? colorScale.colorForUnreadRatio(data?.unread_ratio)
+                  : "hsl(0, 82%, 46%)";
               }}
               childColor={{ from: "color", modifiers: [["brighter", 0.15]] }}
               // Always show labels for tier-1 segments (children of the current root).
@@ -370,6 +502,7 @@ export default function SunburstPanel(props: {
                 const freq = (data as any).frequency as string | null;
                 const isPending = Boolean((data as any).is_pending);
                 const name = String((data as any).name ?? id);
+                const count = Number((data as any).count ?? 0);
                 return (
                   <Paper
                     variant="outlined"
@@ -387,7 +520,7 @@ export default function SunburstPanel(props: {
                       variant="caption"
                       sx={{ display: "block", color: "text.secondary" }}
                     >
-                      {value} messages
+                      {count} messages
                     </Typography>
                     {isPending ? (
                       <Typography

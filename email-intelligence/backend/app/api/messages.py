@@ -70,35 +70,37 @@ def message_samples(
 
     kind, parts = _split_node_id(node_id)
 
-    where = "TRUE"
+    # Keep samples consistent with the dashboard tree: exclude Trash.
+    where = "NOT ('TRASH' = ANY(COALESCE(label_ids, ARRAY[]::text[])))"
     params: dict[str, object] = {"limit": limit}
 
     if kind == "root":
-        where = "TRUE"
+        # No additional filter.
+        where = where
     elif kind == "sender" and parts:
-        where = "from_domain = :from_domain"
+        where += " AND from_domain = :from_domain"
         params["from_domain"] = parts[0]
     elif kind == "cluster" and parts:
         key = parts[0]
         if key == "unclustered":
-            where = "cluster_id IS NULL"
+            where += " AND cluster_id IS NULL"
         else:
             # cluster IDs are UUIDs stored in email_message.cluster_id
-            where = "cluster_id::text = :cluster_id"
+            where += " AND cluster_id::text = :cluster_id"
             params["cluster_id"] = key
     elif kind == "cat" and parts:
         cat = parts[0]
         if cat == "Pending labelling":
-            where = "category IS NULL"
+            where += " AND category IS NULL"
         else:
-            where = "category = :category"
+            where += " AND category = :category"
             params["category"] = cat
     elif kind == "sub" and len(parts) >= 2:
         cat, sub = parts[0], parts[1]
         if cat == "Pending labelling":
-            where = "category IS NULL"
+            where += " AND category IS NULL"
         else:
-            where = "category = :category"
+            where += " AND category = :category"
             params["category"] = cat
 
         if sub == "(unspecified)":
