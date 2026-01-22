@@ -375,3 +375,18 @@ def modify_message_labels(
     if remove_label_ids:
         body["removeLabelIds"] = list(remove_label_ids)
     return service.users().messages().modify(userId=user_id, id=message_id, body=body).execute()
+
+
+def move_message_to_trash(
+    service,
+    *,
+    message_id: str,
+    user_id: str = "me",
+) -> dict:
+    """Move a Gmail message to Trash.
+
+    In Gmail UI terms this is the same as clicking the Trash/Delete button.
+    Messages in Trash are eligible for automatic permanent deletion after ~30 days.
+    """
+
+    return service.users().messages().trash(userId=user_id, id=message_id).execute()

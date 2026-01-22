@@ -916,6 +916,236 @@ def start_gmail_archive_push(batch_size: int = 200, dry_run: bool = False):
     return {"job_id": job_id}
 
 
+@router.post("/gmail/archive/trash")
+def start_gmail_archive_trash(
+    batch_size: int = 250,
+    dry_run: bool = False,
+    remove_archive_label: bool = False,
+):
+    """Move all messages with the Archive marker label to Gmail Trash.
+
+    This is intended for the workflow:
+      1) Takeout/export your archived mail
+      2) Move archived mail to Trash (this job)
+      3) Let Gmail auto-expire Trash after ~30 days (or empty Trash manually)
+
+    Notes:
+      - Uses the Gmail API "trash" operation (move-to-trash), rather than just adding
+        the TRASH system label.
+      - By default we do NOT remove other labels (not required for Trash semantics).
+      - Optionally remove the archive marker label as well.
+
+    Args:
+        batch_size: Max number of messages to fetch and process per iteration. Must be between 1 and 500.
+        dry_run: If true, do not mutate Gmail.
+        remove_archive_label: If true, remove the archive marker label after trashing.
+    """
+
+    if batch_size < 1 or batch_size > 500:
+        raise HTTPException(status_code=400, detail="batch_size must be between 1 and 500")
+
+    settings = Settings()
+    job_id = _make_job_id("gmail-archive-trash")
+    job = _Job(
+        job_id=job_id,
+        type="gmail_archive_trash",
+        state="queued",
+        phase="gmail_archive_trash",
+        started_at=_now(),
+        updated_at=_now(),
+        progress_total=None,
+        progress_processed=0,
+        counters=JobCounters(),
+        message="Queued",
+        eta_hint=None,
+    )
+    with _lock:
+        _jobs[job_id] = job
+
+    def task():
+        from googleapiclient.errors import HttpError
+
+        from app.gmail.client import (
+            GMAIL_SCOPE_MODIFY,
+            get_gmail_service_from_files,
+            label_name_to_id,
+            modify_message_labels,
+            move_message_to_trash,
+        )
+        from app.repository.taxonomy_admin_repository import GMAIL_ARCHIVED_LABEL_NAME
+
+        # Prefer the configured marker label name, but accept fallbacks.
+        candidate_label_names = [
+            GMAIL_ARCHIVED_LABEL_NAME,
+            # User preference / future intent (note: Gmail may reject creating these names,
+            # but we can still act on them if they already exist).
+            "Archive",
+            "Archived",
+            # Prior fallbacks used elsewhere.
+            "Email-Archive",
+            "Archive (marker)",
+        ]
+
+        service = get_gmail_service_from_files(
+            credentials_path=settings.gmail_credentials_path,
+            token_path=settings.gmail_token_path,
+            scopes=[GMAIL_SCOPE_MODIFY],
+            auth_mode=settings.gmail_auth_mode,
+            # Background jobs must not block waiting for OAuth consent.
+            allow_interactive=False,
+        )
+
+        name_to_id = label_name_to_id(service, user_id=settings.gmail_user_id)
+        archive_label_name: str | None = None
+        archive_label_id: str | None = None
+        for nm in candidate_label_names:
+            if nm in name_to_id:
+                archive_label_name = nm
+                archive_label_id = str(name_to_id[nm])
+                break
+
+        if not archive_label_name:
+            # Keep the error short but actionable.
+            available = sorted(name_to_id.keys())
+            hint = ", ".join(available[:25])
+            more = "" if len(available) <= 25 else f" (+{len(available) - 25} more)"
+            raise RuntimeError(
+                "Could not find an archive label to trash. "
+                f"Tried: {candidate_label_names}. "
+                f"Available labels: {hint}{more}"
+            )
+
+        # Only operate on non-trashed messages to avoid re-processing.
+        q = f'-in:trash label:"{archive_label_name}"'
+
+        total = _gmail_total_estimate(service, user_id=settings.gmail_user_id, q=q)
+        if total is not None:
+            _set_job(job_id, total=int(total))
+
+        processed = 0
+        succeeded = 0
+        failed = 0
+        batch_num = 0
+
+        def fetch_batch_ids() -> list[str]:
+            resp = (
+                service.users()
+                .messages()
+                .list(
+                    userId=settings.gmail_user_id,
+                    maxResults=int(batch_size),
+                    includeSpamTrash=True,
+                    q=q,
+                )
+                .execute()
+            )
+            msgs = resp.get("messages", []) or []
+            out: list[str] = []
+            for m in msgs:
+                mid = m.get("id")
+                if mid:
+                    out.append(str(mid))
+            return out
+
+        _set_job(
+            job_id,
+            message=(
+                f"Starting: moving messages with label '{archive_label_name}' to Trash"
+                + (" (dry run)" if dry_run else "")
+            ),
+        )
+
+        while True:
+            batch_ids = fetch_batch_ids()
+            if not batch_ids:
+                break
+
+            batch_num += 1
+            for mid in batch_ids:
+                processed += 1
+                try:
+                    if not dry_run:
+                        move_message_to_trash(service, message_id=str(mid), user_id=settings.gmail_user_id)
+                        if remove_archive_label:
+                            if not archive_label_id:
+                                raise RuntimeError("archive label id not available")
+                            modify_message_labels(
+                                service,
+                                message_id=str(mid),
+                                add_label_ids=None,
+                                remove_label_ids=[str(archive_label_id)],
+                                user_id=settings.gmail_user_id,
+                            )
+                    succeeded += 1
+                except HttpError as he:
+                    status = getattr(getattr(he, "resp", None), "status", None)
+                    if (not dry_run) and status in {429, 500, 502, 503, 504}:
+                        # Simple best-effort retry.
+                        try:
+                            time.sleep(0.25)
+                            move_message_to_trash(service, message_id=str(mid), user_id=settings.gmail_user_id)
+                            if remove_archive_label:
+                                if not archive_label_id:
+                                    raise RuntimeError("archive label id not available")
+                                modify_message_labels(
+                                    service,
+                                    message_id=str(mid),
+                                    add_label_ids=None,
+                                    remove_label_ids=[str(archive_label_id)],
+                                    user_id=settings.gmail_user_id,
+                                )
+                            succeeded += 1
+                            continue
+                        except Exception:
+                            failed += 1
+                            continue
+
+                    failed += 1
+                except Exception:
+                    failed += 1
+
+                if processed % 50 == 0:
+                    _set_job(
+                        job_id,
+                        phase="gmail_archive_trash",
+                        processed=processed,
+                        inserted=succeeded,
+                        failed=failed,
+                        message=(
+                            f"Moving to Trash… batch {batch_num} "
+                            f"(ok {succeeded}, failed {failed})"
+                        ),
+                    )
+
+            _set_job(
+                job_id,
+                phase="gmail_archive_trash",
+                processed=processed,
+                inserted=succeeded,
+                failed=failed,
+                message=f"Completed batch {batch_num} (ok {succeeded}, failed {failed})",
+            )
+            time.sleep(0.05)
+
+        _set_job(
+            job_id,
+            phase="gmail_archive_trash",
+            processed=processed,
+            inserted=succeeded,
+            failed=failed,
+            message=f"Finished: processed {processed}, ok {succeeded}, failed {failed}",
+        )
+
+        if failed > 0:
+            raise RuntimeError(
+                f"Archive trash completed with {failed} failures. "
+                "Re-run the job to retry; it is safe and will skip messages already in Trash."
+            )
+
+    _run_in_thread(job_id, task)
+    return {"job_id": job_id}
+
+
 @router.post("/incremental/run")
 def start_incremental_run(max_messages: int | None = None, max_emails: int | None = None):
     """Run the daily incremental pipeline.
