@@ -148,6 +148,9 @@ venv.bak/
 credentials.json
 token.json
 client_secret*.json
+calendar_token.json
+**/calendar_token.json
+**/calendar_token*.json
 **/credentials.json
 **/token.json
 **/client_secret*.json
