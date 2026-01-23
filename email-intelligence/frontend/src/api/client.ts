@@ -1,7 +1,11 @@
 import type {
   BulkRetentionUpdateResponse,
+  CalendarCheckResponse,
+  CalendarPublishResponse,
   CurrentJobResponse,
   DashboardTreeResponse,
+  FutureEventsResponse,
+  HideEventResponse,
   JobStatusResponse,
   MessageSamplesResponse,
   PushOutboxStatusResponse,
@@ -35,13 +39,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const base = apiBaseUrl();
   const url = `${base}${path}`;
 
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (err) {
+    const details = err instanceof Error ? err.message : String(err);
+    // status=0 is a conventional sentinel for network/proxy failures.
+    throw new ApiError(
+      "Network error: could not reach the API (is the backend running?)",
+      0,
+      details,
+    );
+  }
 
   if (!res.ok) {
     const bodyText = await res.text();
@@ -198,4 +213,34 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ limit, dry_run: dryRun }),
     }),
+
+  // Events
+  getFutureEvents: (limit: number = 200, includeHidden: boolean = false) =>
+    request<FutureEventsResponse>(
+      `/api/events/future?limit=${encodeURIComponent(String(limit))}&include_hidden=${encodeURIComponent(
+        String(includeHidden)
+      )}`
+    ),
+
+  hideEvent: (messageId: number) =>
+    request<HideEventResponse>(`/api/events/${encodeURIComponent(String(messageId))}/hide`, {
+      method: "POST",
+    }),
+
+  unhideEvent: (messageId: number) =>
+    request<HideEventResponse>(`/api/events/${encodeURIComponent(String(messageId))}/unhide`, {
+      method: "POST",
+    }),
+
+  checkEventCalendar: (messageId: number) =>
+    request<CalendarCheckResponse>(
+      `/api/events/${encodeURIComponent(String(messageId))}/calendar/check`,
+      { method: "POST" }
+    ),
+
+  publishEventCalendar: (messageId: number) =>
+    request<CalendarPublishResponse>(
+      `/api/events/${encodeURIComponent(String(messageId))}/calendar/publish`,
+      { method: "POST" }
+    ),
 };

@@ -96,6 +96,20 @@ export default function TopBar(props: {
             </Button>
             <Button
               component={RouterLink}
+              to="/events"
+              size="small"
+              sx={{
+                textTransform: "none",
+                fontWeight: loc.pathname.startsWith("/events") ? 800 : 600,
+                color: loc.pathname.startsWith("/events")
+                  ? "text.primary"
+                  : "text.secondary",
+              }}
+            >
+              Events
+            </Button>
+            <Button
+              component={RouterLink}
               to="/jobs"
               size="small"
               sx={{

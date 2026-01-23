@@ -155,3 +155,50 @@ export interface PushOutboxStatusResponse {
   pending_outbox: number;
   generated_at: string;
 }
+
+export interface FutureEventItem {
+  message_id: number;
+  event_date: string;
+  start_time?: string | null;
+  end_time?: string | null;
+  end_time_inferred: boolean;
+  timezone?: string | null;
+  event_type?: string | null;
+  event_name?: string | null;
+
+  calendar_event_id?: string | null;
+  calendar_checked_at?: string | null;
+  calendar_published_at?: string | null;
+  hidden_at?: string | null;
+
+  subject?: string | null;
+  from_domain: string;
+  internal_date: string;
+}
+
+export interface FutureEventsResponse {
+  generated_at: string;
+  events: FutureEventItem[];
+}
+
+export interface HideEventResponse {
+  message_id: number;
+  hidden: boolean;
+  hidden_at?: string | null;
+}
+
+export interface CalendarCheckResponse {
+  message_id: number;
+  calendar_ical_uid: string;
+  exists: boolean;
+  calendar_event_id?: string | null;
+  calendar_checked_at: string;
+}
+
+export interface CalendarPublishResponse {
+  message_id: number;
+  calendar_ical_uid: string;
+  already_existed: boolean;
+  calendar_event_id: string;
+  calendar_published_at?: string | null;
+}

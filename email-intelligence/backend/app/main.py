@@ -36,6 +36,7 @@ from app.clustering.pipeline import cluster_and_label
 from app.gmail.client import get_gmail_service_from_files
 
 from app.api.dashboard import router as dashboard_router
+from app.api.events import router as events_router
 from app.api.jobs import router as jobs_router
 from app.api.messages import router as messages_router
 from app.api.taxonomy import router as taxonomy_router
@@ -53,6 +54,7 @@ app.add_middleware(
 )
 
 app.include_router(dashboard_router)
+app.include_router(events_router)
 app.include_router(jobs_router)
 app.include_router(messages_router)
 app.include_router(taxonomy_router)

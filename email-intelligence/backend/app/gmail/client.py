@@ -280,23 +280,68 @@ def get_message_body_text(
         raw = base64.urlsafe_b64decode(data.encode("utf-8"))
         return raw.decode("utf-8", errors="replace")
 
-    def walk_parts(part: dict) -> list[str]:
+    def _html_to_text(html: str) -> str:
+        """Best-effort HTML -> plain text.
+
+        This is intentionally lightweight (stdlib-only) and designed for email bodies.
+        """
+
+        import html as _html
+        import re
+
+        s = html
+
+        # Drop script/style blocks.
+        s = re.sub(r"<\s*script[^>]*>.*?<\s*/\s*script\s*>", " ", s, flags=re.I | re.S)
+        s = re.sub(r"<\s*style[^>]*>.*?<\s*/\s*style\s*>", " ", s, flags=re.I | re.S)
+
+        # Common block breaks.
+        s = re.sub(r"<\s*br\s*/?\s*>", "\n", s, flags=re.I)
+        s = re.sub(r"</\s*p\s*>", "\n\n", s, flags=re.I)
+        s = re.sub(r"</\s*div\s*>", "\n", s, flags=re.I)
+        s = re.sub(r"</\s*li\s*>", "\n", s, flags=re.I)
+
+        # Remove remaining tags.
+        s = re.sub(r"<[^>]+>", " ", s)
+        s = _html.unescape(s)
+
+        # Collapse whitespace.
+        s = re.sub(r"[\t\r\f\v]+", " ", s)
+        s = re.sub(r"\n\s+", "\n", s)
+        s = re.sub(r"\n{3,}", "\n\n", s)
+        s = re.sub(r" {2,}", " ", s)
+        return s.strip()
+
+    def walk_parts(part: dict) -> tuple[list[str], list[str]]:
         mime = (part.get("mimeType") or "").lower()
         body = part.get("body", {}) or {}
         data = body.get("data")
-        if data and mime.startswith("text/plain"):
-            return [decode_b64(data)]
 
-        texts: list[str] = []
+        plain: list[str] = []
+        html: list[str] = []
+
+        if data and mime.startswith("text/plain"):
+            plain.append(decode_b64(data))
+        elif data and mime.startswith("text/html"):
+            html.append(decode_b64(data))
+
         for p in part.get("parts", []) or []:
-            texts.extend(walk_parts(p))
-        return texts
+            p_plain, p_html = walk_parts(p)
+            plain.extend(p_plain)
+            html.extend(p_html)
+        return plain, html
 
     payload = msg.get("payload", {}) or {}
-    texts = walk_parts(payload)
-    if texts:
-        combined = "\n\n".join(texts).strip()
+    plain_texts, html_texts = walk_parts(payload)
+    if plain_texts:
+        combined = "\n\n".join(plain_texts).strip()
         return combined[:max_chars]
+
+    if html_texts:
+        combined_html = "\n\n".join(html_texts).strip()
+        rendered = _html_to_text(combined_html)
+        if rendered:
+            return rendered[:max_chars]
 
     # Fallback: Gmail's snippet is short but better than nothing.
     snippet = (msg.get("snippet") or "").strip()

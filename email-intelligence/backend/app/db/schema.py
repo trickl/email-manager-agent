@@ -80,6 +80,72 @@ def ensure_core_schema(engine) -> None:
         CREATE INDEX IF NOT EXISTS idx_email_label_ids
             ON email_message USING GIN(label_ids);
 
+        -- Event extraction (Phase 2+): per-message structured event metadata.
+        -- One row per email_message; idempotent updates allow re-running the extractor.
+        CREATE TABLE IF NOT EXISTS message_event_metadata (
+            message_id INTEGER PRIMARY KEY REFERENCES email_message(id) ON DELETE CASCADE,
+
+            status TEXT NOT NULL DEFAULT 'queued',
+            error TEXT,
+
+            event_name TEXT,
+            event_type TEXT,
+            event_date DATE,
+            start_time TIME,
+            end_time TIME,
+            timezone TEXT,
+            end_time_inferred BOOLEAN NOT NULL DEFAULT FALSE,
+
+            confidence REAL,
+            model TEXT,
+            prompt_version TEXT,
+            raw_json JSONB,
+
+            extracted_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        -- Optional UX / integration fields.
+        ALTER TABLE message_event_metadata
+            ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
+        ALTER TABLE message_event_metadata
+            ADD COLUMN IF NOT EXISTS calendar_event_id TEXT;
+        ALTER TABLE message_event_metadata
+            ADD COLUMN IF NOT EXISTS calendar_ical_uid TEXT;
+        ALTER TABLE message_event_metadata
+            ADD COLUMN IF NOT EXISTS calendar_checked_at TIMESTAMPTZ;
+        ALTER TABLE message_event_metadata
+            ADD COLUMN IF NOT EXISTS calendar_published_at TIMESTAMPTZ;
+
+        CREATE INDEX IF NOT EXISTS idx_message_event_metadata_status
+            ON message_event_metadata(status);
+        CREATE INDEX IF NOT EXISTS idx_message_event_metadata_event_date
+            ON message_event_metadata(event_date);
+
+        CREATE INDEX IF NOT EXISTS idx_message_event_metadata_hidden_at
+            ON message_event_metadata(hidden_at);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_message_event_metadata_calendar_ical_uid
+            ON message_event_metadata(calendar_ical_uid);
+
+        -- Best-effort guardrail: constrain event_type to the allowed set.
+        -- Use NOT VALID so existing rows from earlier prompt versions don't block startup.
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'chk_message_event_metadata_event_type'
+            ) THEN
+                ALTER TABLE message_event_metadata
+                    ADD CONSTRAINT chk_message_event_metadata_event_type
+                    CHECK (
+                        event_type IS NULL
+                        OR event_type IN ('Theatre', 'Comedy', 'Opera', 'Ballet', 'Cinema', 'Social', 'Other')
+                    ) NOT VALID;
+            END IF;
+        END $$;
+
         -- Taxonomy assignment: DB is source-of-truth for message->label mapping.
         CREATE TABLE IF NOT EXISTS message_taxonomy_label (
             message_id INTEGER NOT NULL REFERENCES email_message(id) ON DELETE CASCADE,

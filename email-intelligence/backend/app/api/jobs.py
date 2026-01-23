@@ -1916,4 +1916,195 @@ def start_incremental_run(max_messages: int | None = None, max_emails: int | Non
     return {"job_id": job_id}
 
 
+@router.post("/events/extract/financial-tickets-bookings")
+def start_event_extract_financial_tickets_bookings(limit: int = 250):
+    """Extract event metadata for emails in Financial / Tickets & Bookings.
+
+    This job:
+    - selects messages from Postgres by taxonomy assignment
+    - fetches each message body from Gmail (best-effort)
+    - calls the local LLM (Ollama) to extract event name/date/start/end
+    - stores structured metadata in Postgres attached to the email_message row
+
+    Notes:
+    - End times may be inferred (and marked) when not provided explicitly.
+    - This is safe/non-destructive: it does not modify Gmail.
+    """
+
+    settings = Settings()
+
+    limit = max(1, min(int(limit), 5000))
+
+    job_id = _make_job_id("event-extract")
+    job = _Job(
+        job_id=job_id,
+        type="event_extract",
+        state="queued",
+        phase="event_extract",
+        started_at=_now(),
+        updated_at=_now(),
+        progress_total=None,
+        progress_processed=0,
+        counters=JobCounters(),
+        message="Queued",
+        error_samples=[],
+        eta_hint=None,
+    )
+    with _lock:
+        _jobs[job_id] = job
+
+    def task():
+        from app.analysis.events.extractor import extract_event_from_email
+        from app.analysis.events.prompt import PROMPT_VERSION
+        from app.db.postgres import engine
+        from app.gmail.client import get_gmail_service_from_files, get_message_body_text
+        from app.repository.event_metadata_repository import (
+            list_messages_in_category,
+            upsert_message_event_metadata,
+        )
+
+        if not settings.ollama_host:
+            raise RuntimeError(
+                "Ollama is not configured. Set EMAIL_INTEL_OLLAMA_HOST (e.g. http://localhost:11434)."
+            )
+
+        service = get_gmail_service_from_files(
+            credentials_path=settings.gmail_credentials_path,
+            token_path=settings.gmail_token_path,
+            auth_mode=settings.gmail_auth_mode,
+            allow_interactive=settings.gmail_allow_interactive,
+        )
+
+        rows = list_messages_in_category(
+            engine=engine,
+            category="Financial",
+            subcategory="Tickets & Bookings",
+            limit=limit,
+        )
+
+        total = len(rows)
+        _set_job(job_id, total=total, phase="event_extract", message=f"Loaded {total} messages")
+
+        inserted = 0
+        updated = 0
+        failed = 0
+        processed = 0
+
+        for r in rows:
+            processed += 1
+            try:
+                mid = int(r["message_id"])
+                gid = str(r["gmail_message_id"])
+                subj = r.get("subject")
+                from_domain = r.get("from_domain")
+                internal_date = r.get("internal_date")
+                internal_iso = internal_date.isoformat() if internal_date is not None else None
+
+                body = get_message_body_text(
+                    service,
+                    message_id=gid,
+                    user_id=settings.gmail_user_id,
+                    max_chars=30_000,
+                )
+
+                extracted = extract_event_from_email(
+                    ollama_host=settings.ollama_host,
+                    ollama_model=settings.ollama_model,
+                    subject=str(subj) if subj is not None else None,
+                    from_domain=str(from_domain) if from_domain is not None else None,
+                    internal_date_iso=internal_iso,
+                    body=body,
+                )
+
+                # Decide a simple status.
+                if extracted.event_name or extracted.event_date or extracted.start_time:
+                    status = "succeeded"
+                else:
+                    status = "no_event"
+
+                was_insert = upsert_message_event_metadata(
+                    engine=engine,
+                    message_id=mid,
+                    status=status,
+                    error=None,
+                    event_name=extracted.event_name,
+                    event_type=extracted.event_type,
+                    event_date=extracted.event_date,
+                    start_time=extracted.start_time,
+                    end_time=extracted.end_time,
+                    timezone=extracted.timezone,
+                    end_time_inferred=bool(extracted.end_time_inferred),
+                    confidence=extracted.confidence,
+                    model=extracted.model,
+                    prompt_version=extracted.prompt_version,
+                    raw_json=extracted.raw_json,
+                    extracted_at=_now(),
+                )
+
+                if was_insert:
+                    inserted += 1
+                else:
+                    updated += 1
+
+                _set_job(
+                    job_id,
+                    phase="event_extract",
+                    processed=processed,
+                    inserted=inserted,
+                    skipped_existing=updated,
+                    failed=failed,
+                    message=f"Extracted events: {processed}/{total} (inserted {inserted}, updated {updated}, failed {failed})",
+                )
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                _add_job_error(job_id, f"event_extract_failed message_id={r.get('gmail_message_id')}: {e}")
+
+                # Best-effort: persist the failure row so we have visibility.
+                try:
+                    mid = int(r["message_id"])
+                    upsert_message_event_metadata(
+                        engine=engine,
+                        message_id=mid,
+                        status="failed",
+                        error=str(e),
+                        event_name=None,
+                        event_type=None,
+                        event_date=None,
+                        start_time=None,
+                        end_time=None,
+                        timezone=None,
+                        end_time_inferred=False,
+                        confidence=None,
+                        model=settings.ollama_model,
+                        prompt_version=PROMPT_VERSION,
+                        raw_json=None,
+                        extracted_at=_now(),
+                    )
+                except Exception:
+                    pass
+
+                _set_job(
+                    job_id,
+                    phase="event_extract",
+                    processed=processed,
+                    inserted=inserted,
+                    skipped_existing=updated,
+                    failed=failed,
+                    message=f"Extracted events: {processed}/{total} (inserted {inserted}, updated {updated}, failed {failed})",
+                )
+
+        _set_job(
+            job_id,
+            phase="event_extract",
+            processed=processed,
+            inserted=inserted,
+            skipped_existing=updated,
+            failed=failed,
+            message=f"Done: processed {processed}, inserted {inserted}, updated {updated}, failed {failed}",
+        )
+
+    _run_in_thread(job_id, task)
+    return {"job_id": job_id}
+
+
 

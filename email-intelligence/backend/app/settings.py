@@ -41,7 +41,21 @@ class Settings(BaseSettings):
     gmail_allow_interactive: bool = True
     gmail_auth_mode: str = "local_server"  # local_server|console
 
-    @field_validator("gmail_credentials_path", "gmail_token_path", mode="before")
+    # Google Calendar integration (separate token recommended because scopes differ)
+    calendar_id: str = "primary"
+    calendar_credentials_path: str = "credentials.json"
+    calendar_token_path: str = "calendar_token.json"
+    calendar_allow_interactive: bool = True
+    calendar_auth_mode: str = "local_server"  # local_server|console
+    calendar_default_timezone: str = "Europe/London"
+
+    @field_validator(
+        "gmail_credentials_path",
+        "gmail_token_path",
+        "calendar_credentials_path",
+        "calendar_token_path",
+        mode="before",
+    )
     @classmethod
     def _resolve_local_paths(cls, v: str) -> str:
         p = Path(str(v))
