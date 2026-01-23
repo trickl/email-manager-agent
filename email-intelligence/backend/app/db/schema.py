@@ -146,6 +146,50 @@ def ensure_core_schema(engine) -> None:
             END IF;
         END $$;
 
+        -- Payment extraction: per-message structured payment metadata.
+        -- One row per email_message; idempotent updates allow re-running the extractor.
+        CREATE TABLE IF NOT EXISTS message_payment_metadata (
+            message_id INTEGER PRIMARY KEY REFERENCES email_message(id) ON DELETE CASCADE,
+
+            status TEXT NOT NULL DEFAULT 'queued',
+            error TEXT,
+
+            item_name TEXT,
+            vendor_name TEXT,
+            item_category TEXT,
+
+            cost_amount NUMERIC(12, 2),
+            cost_currency TEXT,
+
+            is_recurring BOOLEAN,
+            frequency TEXT,
+            payment_date DATE,
+
+            payment_fingerprint TEXT,
+
+            confidence REAL,
+            model TEXT,
+            prompt_version TEXT,
+            raw_json JSONB,
+
+            extracted_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        ALTER TABLE message_payment_metadata
+            ADD COLUMN IF NOT EXISTS item_category TEXT;
+
+        CREATE INDEX IF NOT EXISTS idx_message_payment_metadata_status
+            ON message_payment_metadata(status);
+        CREATE INDEX IF NOT EXISTS idx_message_payment_metadata_payment_date
+            ON message_payment_metadata(payment_date);
+        CREATE INDEX IF NOT EXISTS idx_message_payment_metadata_vendor_name
+            ON message_payment_metadata(vendor_name);
+        CREATE INDEX IF NOT EXISTS idx_message_payment_metadata_item_category
+            ON message_payment_metadata(item_category);
+        CREATE INDEX IF NOT EXISTS idx_message_payment_metadata_fingerprint
+            ON message_payment_metadata(payment_fingerprint);
+
         -- Taxonomy assignment: DB is source-of-truth for message->label mapping.
         CREATE TABLE IF NOT EXISTS message_taxonomy_label (
             message_id INTEGER NOT NULL REFERENCES email_message(id) ON DELETE CASCADE,

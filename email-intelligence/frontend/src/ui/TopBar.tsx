@@ -110,6 +110,20 @@ export default function TopBar(props: {
             </Button>
             <Button
               component={RouterLink}
+              to="/financials"
+              size="small"
+              sx={{
+                textTransform: "none",
+                fontWeight: loc.pathname.startsWith("/financials") ? 800 : 600,
+                color: loc.pathname.startsWith("/financials")
+                  ? "text.primary"
+                  : "text.secondary",
+              }}
+            >
+              Financials
+            </Button>
+            <Button
+              component={RouterLink}
               to="/jobs"
               size="small"
               sx={{

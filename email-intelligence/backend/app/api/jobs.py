@@ -16,7 +16,7 @@ import uuid
 import queue
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 from fastapi import APIRouter
@@ -2096,6 +2096,272 @@ def start_event_extract_financial_tickets_bookings(limit: int = 250):
         _set_job(
             job_id,
             phase="event_extract",
+            processed=processed,
+            inserted=inserted,
+            skipped_existing=updated,
+            failed=failed,
+            message=f"Done: processed {processed}, inserted {inserted}, updated {updated}, failed {failed}",
+        )
+
+    _run_in_thread(job_id, task)
+    return {"job_id": job_id}
+
+
+@router.post("/payments/extract/financial-and-recent")
+def start_payment_extract_financial_and_recent(days: int = 12):
+    """Extract payment metadata for all Financial emails and recent emails.
+
+    This job:
+    - extracts payments for all messages tagged with category=Financial (not TRASH)
+    - scans the last N days of Gmail, upserts metadata, and extracts payments (not TRASH)
+
+    Notes:
+    - This is safe/non-destructive: it does not modify Gmail.
+    - De-duplication is handled downstream via payment_fingerprint.
+    """
+
+    settings = Settings()
+
+    days = max(1, int(days))
+
+    job_id = _make_job_id("payment-extract")
+    job = _Job(
+        job_id=job_id,
+        type="payment_extract",
+        state="queued",
+        phase="payment_extract",
+        started_at=_now(),
+        updated_at=_now(),
+        progress_total=None,
+        progress_processed=0,
+        counters=JobCounters(),
+        message="Queued",
+        error_samples=[],
+        eta_hint=None,
+    )
+    with _lock:
+        _jobs[job_id] = job
+
+    def task():
+        from app.analysis.payments.extractor import extract_payment_from_email
+        from app.analysis.payments.prompt import PROMPT_VERSION
+        from app.db.postgres import engine
+        from app.gmail.client import (
+            get_gmail_service_from_files,
+            get_message_body_text,
+            get_message_metadata,
+            iter_message_ids,
+        )
+        from app.gmail.mapping import metadata_to_domain
+        from app.repository.email_repository import insert_email
+        from app.repository.payment_metadata_repository import (
+            list_messages_in_category_any_subcategory,
+            list_messages_received_since,
+            upsert_message_payment_metadata,
+        )
+
+        if not settings.ollama_host:
+            raise RuntimeError(
+                "Ollama is not configured. Set EMAIL_INTEL_OLLAMA_HOST (e.g. http://localhost:11434)."
+            )
+
+        service = get_gmail_service_from_files(
+            credentials_path=settings.gmail_credentials_path,
+            token_path=settings.gmail_token_path,
+            auth_mode=settings.gmail_auth_mode,
+            allow_interactive=settings.gmail_allow_interactive,
+        )
+
+        # Phase 1: Financial category (tier-1) extraction.
+        rows_financial = list_messages_in_category_any_subcategory(
+            engine=engine,
+            category="Financial",
+            limit=None,
+        )
+
+        # Phase 2: Recent email metadata sync + extraction.
+        cutoff = _now() - timedelta(days=days)
+        cutoff_q = f"after:{int((cutoff - timedelta(seconds=1)).timestamp())}"
+
+        scanned = 0
+        inserted_meta = 0
+        failed_meta = 0
+
+        _set_job(
+            job_id,
+            phase="payment_extract",
+            message=f"Syncing recent metadata (last {days} days)",
+        )
+
+        for msg_id in iter_message_ids(
+            service,
+            user_id=settings.gmail_user_id,
+            page_size=500,
+            q=cutoff_q,
+        ):
+            scanned += 1
+            try:
+                meta = get_message_metadata(
+                    service, message_id=msg_id, user_id=settings.gmail_user_id
+                )
+                email = metadata_to_domain(meta)
+
+                if email.internal_date.tzinfo is None:
+                    email.internal_date = email.internal_date.replace(tzinfo=timezone.utc)
+                if email.internal_date < cutoff:
+                    continue
+
+                insert_email(email)
+                inserted_meta += 1
+
+                if scanned % 250 == 0:
+                    _set_job(
+                        job_id,
+                        phase="payment_extract",
+                        message=(
+                            "Syncing recent metadata: "
+                            f"scanned={scanned} upserted={inserted_meta} failed={failed_meta}"
+                        ),
+                    )
+            except Exception as e:  # noqa: BLE001
+                failed_meta += 1
+                _add_job_error(job_id, f"payment_recent_metadata_failed {msg_id}: {e}")
+
+        rows_recent = list_messages_received_since(
+            engine=engine,
+            received_since=cutoff,
+            limit=None,
+            include_trash=False,
+        )
+
+        total = len(rows_financial) + len(rows_recent)
+        _set_job(job_id, total=total, phase="payment_extract", message=f"Loaded {total} messages")
+
+        inserted = 0
+        updated = 0
+        failed = 0
+        processed = 0
+
+        def _process_rows(rows: list[dict[str, object]], label: str) -> None:
+            nonlocal inserted, updated, failed, processed
+            for r in rows:
+                processed += 1
+                try:
+                    mid = int(r["message_id"])  # type: ignore[index]
+                    gid = str(r["gmail_message_id"])  # type: ignore[index]
+                    subj = r.get("subject")
+                    from_domain = r.get("from_domain")
+                    internal_date = r.get("internal_date")
+                    internal_iso = internal_date.isoformat() if internal_date is not None else None
+
+                    body = get_message_body_text(
+                        service,
+                        message_id=gid,
+                        user_id=settings.gmail_user_id,
+                        max_chars=30_000,
+                    )
+
+                    extracted = extract_payment_from_email(
+                        ollama_host=settings.ollama_host,
+                        ollama_model=settings.ollama_model,
+                        subject=str(subj) if subj is not None else None,
+                        from_domain=str(from_domain) if from_domain is not None else None,
+                        internal_date_iso=internal_iso,
+                        body=body,
+                    )
+
+                    if extracted.cost_amount or extracted.vendor_name or extracted.item_name:
+                        status = "succeeded"
+                    else:
+                        status = "no_payment"
+
+                    was_insert = upsert_message_payment_metadata(
+                        engine=engine,
+                        message_id=mid,
+                        status=status,
+                        error=None,
+                        item_name=extracted.item_name,
+                        vendor_name=extracted.vendor_name,
+                        item_category=extracted.item_category,
+                        cost_amount=extracted.cost_amount,
+                        cost_currency=extracted.cost_currency,
+                        is_recurring=extracted.is_recurring,
+                        frequency=extracted.frequency,
+                        payment_date=extracted.payment_date,
+                        payment_fingerprint=extracted.payment_fingerprint,
+                        confidence=extracted.confidence,
+                        model=extracted.model,
+                        prompt_version=extracted.prompt_version,
+                        raw_json=extracted.raw_json,
+                        extracted_at=_now(),
+                    )
+
+                    if was_insert:
+                        inserted += 1
+                    else:
+                        updated += 1
+
+                    if processed % 25 == 0 or processed == total:
+                        _set_job(
+                            job_id,
+                            phase="payment_extract",
+                            processed=processed,
+                            inserted=inserted,
+                            skipped_existing=updated,
+                            failed=failed,
+                            message=(
+                                f"{label}: {processed}/{total} (ins {inserted}, "
+                                f"upd {updated}, fail {failed})"
+                            ),
+                        )
+                except Exception as e:  # noqa: BLE001
+                    failed += 1
+                    _add_job_error(job_id, f"payment_extract_failed {r.get('gmail_message_id')}: {e}")
+
+                    try:
+                        mid = int(r["message_id"])  # type: ignore[index]
+                        upsert_message_payment_metadata(
+                            engine=engine,
+                            message_id=mid,
+                            status="failed",
+                            error=str(e),
+                            item_name=None,
+                            vendor_name=None,
+                            item_category=None,
+                            cost_amount=None,
+                            cost_currency=None,
+                            is_recurring=None,
+                            frequency=None,
+                            payment_date=None,
+                            payment_fingerprint=None,
+                            confidence=None,
+                            model=settings.ollama_model,
+                            prompt_version=PROMPT_VERSION,
+                            raw_json=None,
+                            extracted_at=_now(),
+                        )
+                    except Exception:
+                        pass
+
+                    _set_job(
+                        job_id,
+                        phase="payment_extract",
+                        processed=processed,
+                        inserted=inserted,
+                        skipped_existing=updated,
+                        failed=failed,
+                        message=(
+                            f"{label}: {processed}/{total} (ins {inserted}, "
+                            f"upd {updated}, fail {failed})"
+                        ),
+                    )
+
+        _process_rows(rows_financial, "Financial")
+        _process_rows(rows_recent, "Recent")
+
+        _set_job(
+            job_id,
+            phase="payment_extract",
             processed=processed,
             inserted=inserted,
             skipped_existing=updated,

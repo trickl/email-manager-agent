@@ -8,6 +8,8 @@ import type {
   HideEventResponse,
   JobStatusResponse,
   MessageSamplesResponse,
+  PaymentsAnalyticsResponse,
+  PaymentsListResponse,
   PushOutboxStatusResponse,
   PushResponse,
   RetentionPreviewResponse,
@@ -243,4 +245,26 @@ export const api = {
       `/api/events/${encodeURIComponent(String(messageId))}/calendar/publish`,
       { method: "POST" }
     ),
+
+  // Payments
+  getPaymentsRecent: (months: number = 3, limit: number = 200, currency?: string | null) => {
+    const params = new URLSearchParams({
+      months: String(months),
+      limit: String(limit),
+    });
+    if (currency) {
+      params.set("currency", currency);
+    }
+    return request<PaymentsListResponse>(`/api/payments/recent?${params.toString()}`);
+  },
+
+  getPaymentsAnalytics: (months: number = 6, currency?: string | null) => {
+    const params = new URLSearchParams({
+      months: String(months),
+    });
+    if (currency) {
+      params.set("currency", currency);
+    }
+    return request<PaymentsAnalyticsResponse>(`/api/payments/analytics?${params.toString()}`);
+  },
 };

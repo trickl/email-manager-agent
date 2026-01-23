@@ -119,4 +119,70 @@ class CalendarPublishResponse(BaseModel):
     already_existed: bool
     calendar_event_id: str
     calendar_published_at: datetime | None = None
+
+
+class PaymentItem(BaseModel):
+    message_id: int
+
+    item_name: str | None = None
+    vendor_name: str | None = None
+    item_category: str | None = None
+    cost_amount: float | None = None
+    cost_currency: str | None = None
+    is_recurring: bool | None = None
+    frequency: str | None = None
+    payment_date: date | None = None
+    payment_fingerprint: str | None = None
+
+    subject: str | None = None
+    from_domain: str | None = None
+    internal_date: datetime | None = None
+
+
+class PaymentsListResponse(BaseModel):
+    generated_at: datetime
+    payments: list[PaymentItem]
+
+
+class SpendByVendor(BaseModel):
+    vendor: str
+    total_spend: float
+
+
+class SpendByCategory(BaseModel):
+    category: str
+    total_spend: float
+
+
+class SpendByRecurring(BaseModel):
+    kind: str
+    payment_count: int
+    total_spend: float
+
+
+class SpendByFrequency(BaseModel):
+    frequency: str
+    payment_count: int
+    total_spend: float
+
+
+class SpendByMonth(BaseModel):
+    month: date
+    total_spend: float
+    payment_count: int
+
+
+class PaymentsAnalyticsResponse(BaseModel):
+    generated_at: datetime
+    window_start: date
+    window_end: date
+    currency: str | None = None
+    available_currencies: list[str] = []
+    payment_count: int
+    total_spend: float
+    by_vendor: list[SpendByVendor]
+    by_category: list[SpendByCategory]
+    by_recurring: list[SpendByRecurring]
+    by_frequency: list[SpendByFrequency]
+    by_month: list[SpendByMonth]
     

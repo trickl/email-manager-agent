@@ -202,3 +202,67 @@ export interface CalendarPublishResponse {
   calendar_event_id: string;
   calendar_published_at?: string | null;
 }
+
+export interface PaymentItem {
+  message_id: number;
+  item_name?: string | null;
+  vendor_name?: string | null;
+  item_category?: string | null;
+  cost_amount?: number | null;
+  cost_currency?: string | null;
+  is_recurring?: boolean | null;
+  frequency?: string | null;
+  payment_date?: string | null;
+  payment_fingerprint?: string | null;
+  subject?: string | null;
+  from_domain?: string | null;
+  internal_date?: string | null;
+}
+
+export interface PaymentsListResponse {
+  generated_at: string;
+  payments: PaymentItem[];
+}
+
+export interface SpendByVendor {
+  vendor: string;
+  total_spend: number;
+}
+
+export interface SpendByCategory {
+  category: string;
+  total_spend: number;
+}
+
+export interface SpendByRecurring {
+  kind: string;
+  payment_count: number;
+  total_spend: number;
+}
+
+export interface SpendByFrequency {
+  frequency: string;
+  payment_count: number;
+  total_spend: number;
+}
+
+export interface SpendByMonth {
+  month: string;
+  total_spend: number;
+  payment_count: number;
+}
+
+export interface PaymentsAnalyticsResponse {
+  generated_at: string;
+  window_start: string;
+  window_end: string;
+  currency?: string | null;
+  available_currencies: string[];
+  payment_count: number;
+  total_spend: number;
+  by_vendor: SpendByVendor[];
+  by_category: SpendByCategory[];
+  by_recurring: SpendByRecurring[];
+  by_frequency: SpendByFrequency[];
+  by_month: SpendByMonth[];
+}
