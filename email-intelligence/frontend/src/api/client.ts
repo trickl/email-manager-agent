@@ -130,6 +130,26 @@ export const api = {
     );
   },
 
+  startMaintenance: (opts?: {
+    inbox_cleanup_days?: number;
+    label_threshold?: number;
+    fallback_days?: number;
+  }) => {
+    const params = new URLSearchParams();
+    if (opts?.inbox_cleanup_days !== undefined) {
+      params.set("inbox_cleanup_days", String(opts.inbox_cleanup_days));
+    }
+    if (opts?.label_threshold !== undefined) {
+      params.set("label_threshold", String(opts.label_threshold));
+    }
+    if (opts?.fallback_days !== undefined) {
+      params.set("fallback_days", String(opts.fallback_days));
+    }
+    const suffix = params.toString();
+    const path = suffix ? `/api/jobs/maintenance/run?${suffix}` : "/api/jobs/maintenance/run";
+    return request<{ job_id: string }>(path, { method: "POST" });
+  },
+
   getCurrentJob: () => request<CurrentJobResponse>("/api/jobs/current"),
   getJobStatus: (jobId: string) => request<JobStatusResponse>(`/api/jobs/${jobId}/status`),
 

@@ -123,6 +123,82 @@ def list_messages_received_since(
     return [dict(r) for r in rows]
 
 
+def list_unprocessed_messages_in_category_since(
+    *,
+    engine: Any,
+    category: str,
+    subcategory: str | None,
+    received_since: datetime,
+    limit: int | None = 5000,
+    include_trash: bool = False,
+) -> list[dict[str, Any]]:
+    """List category-scoped messages missing event metadata.
+
+    Args:
+        engine: SQLAlchemy engine.
+        category: Tier-1 category.
+        subcategory: Tier-2 subcategory (optional).
+        received_since: Only include emails with internal_date >= this value.
+        limit: Max rows (None for no limit).
+        include_trash: If False, exclude messages with the TRASH label.
+
+    Returns:
+        Rows with message_id, gmail_message_id, subject, from_domain, internal_date.
+    """
+
+    from sqlalchemy import text
+
+    params: dict[str, object] = {
+        "category": str(category),
+        "received_since": received_since,
+    }
+
+    where = [
+        "em.category = :category",
+        "em.internal_date >= :received_since",
+        "em.gmail_message_id NOT LIKE 'fake-%'",
+        "mem.message_id IS NULL",
+    ]
+
+    if subcategory is None:
+        where.append("COALESCE(em.subcategory, '') = ''")
+    else:
+        where.append("em.subcategory = :subcategory")
+        params["subcategory"] = str(subcategory)
+
+    if not include_trash:
+        where.append("NOT ('TRASH' = ANY(COALESCE(em.label_ids, ARRAY[]::text[])))")
+
+    where_sql = " AND ".join(where)
+
+    limit_sql = ""
+    if limit is not None:
+        safe_limit = max(1, min(int(limit), 50_000))
+        params["limit"] = safe_limit
+        limit_sql = "LIMIT :limit"
+
+    q = text(
+        f"""
+        SELECT
+            em.id AS message_id,
+            em.gmail_message_id AS gmail_message_id,
+            em.subject AS subject,
+            em.from_domain AS from_domain,
+            em.internal_date AS internal_date
+        FROM email_message em
+        LEFT JOIN message_event_metadata mem ON mem.message_id = em.id
+        WHERE {where_sql}
+        ORDER BY em.internal_date ASC, em.id ASC
+        {limit_sql}
+        """
+    )
+
+    with engine.begin() as conn:
+        rows = conn.execute(q, params).mappings().all()
+
+    return [dict(r) for r in rows]
+
+
 def upsert_message_event_metadata(
     *,
     engine: Any,

@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # Development helpers
     seed_fake_email: bool = False
 
+    # Maintenance defaults
+    inbox_cleanup_days: int = 14
+    maintenance_label_threshold: int = 200
+    maintenance_fallback_days: int = 30
+
     # Optional local LLM (Ollama)
     ollama_host: str | None = None
     ollama_model: str = "llama3.1:8b"

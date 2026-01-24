@@ -1,6 +1,8 @@
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Link from "@mui/material/Link";
 import Paper from "@mui/material/Paper";
+import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { Link as RouterLink } from "react-router-dom";
 import TopBar from "../ui/TopBar";
@@ -28,6 +30,16 @@ export default function JobsPage() {
             Back to dashboard
           </Link>
         </Typography>
+        <Stack direction="row" spacing={1} sx={{ mt: 2, flexWrap: "wrap" }}>
+          <Button
+            variant="contained"
+            size="small"
+            disabled={disabled}
+            onClick={() => startJob("maintenance")}
+          >
+            Run maintenance
+          </Button>
+        </Stack>
         {jobStatus && (
           <Paper
             variant="outlined"

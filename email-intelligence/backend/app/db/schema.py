@@ -68,8 +68,15 @@ def ensure_core_schema(engine) -> None:
         ALTER TABLE email_message
             ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP;
 
+        -- Inbox aging: remove INBOX label after a threshold while retaining labels.
+        ALTER TABLE email_message
+            ADD COLUMN IF NOT EXISTS inbox_removed_at TIMESTAMP;
+
         CREATE INDEX IF NOT EXISTS idx_email_archived_at
             ON email_message(archived_at);
+
+        CREATE INDEX IF NOT EXISTS idx_email_inbox_removed_at
+            ON email_message(inbox_removed_at);
 
         CREATE INDEX IF NOT EXISTS idx_email_category
             ON email_message(category);

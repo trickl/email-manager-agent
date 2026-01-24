@@ -2373,4 +2373,71 @@ def start_payment_extract_financial_and_recent(days: int = 12):
     return {"job_id": job_id}
 
 
+@router.post("/maintenance/run")
+def start_maintenance(
+    inbox_cleanup_days: int | None = None,
+    label_threshold: int | None = None,
+    fallback_days: int | None = None,
+):
+    """Run the full maintenance pipeline incrementally."""
+
+    settings = Settings()
+
+    job_id = _make_job_id("maintenance")
+    job = _Job(
+        job_id=job_id,
+        type="maintenance",
+        state="queued",
+        phase="maintenance",
+        started_at=_now(),
+        updated_at=_now(),
+        progress_total=None,
+        progress_processed=0,
+        counters=JobCounters(),
+        message="Queued",
+        error_samples=[],
+        eta_hint=None,
+    )
+    with _lock:
+        _jobs[job_id] = job
+
+    def task():
+        from app.db.postgres import engine
+        from app.maintenance import run_maintenance
+
+        def progress_cb(
+            *,
+            phase: str,
+            message: str | None = None,
+            processed: int | None = None,
+            total: int | None = None,
+            inserted: int | None = None,
+            skipped_existing: int | None = None,
+            failed: int | None = None,
+        ) -> None:
+            _set_job(
+                job_id,
+                phase=phase,
+                message=message,
+                processed=processed,
+                total=total,
+                inserted=inserted,
+                skipped_existing=skipped_existing,
+                failed=failed,
+            )
+
+        run_maintenance(
+            engine=engine,
+            settings=settings,
+            inbox_cleanup_days=inbox_cleanup_days,
+            label_threshold=label_threshold,
+            fallback_days=fallback_days,
+            allow_interactive=False,
+            progress_cb=progress_cb,
+        )
+
+    _run_in_thread(job_id, task)
+    return {"job_id": job_id}
+
+
 
