@@ -59,6 +59,22 @@ def count_unlabelled(engine) -> int:
         return int(conn.execute(q).scalar() or 0)
 
 
+def count_unlabelled_since(engine, *, received_since: datetime) -> int:
+    from sqlalchemy import text
+
+    q = text(
+        """
+        SELECT COUNT(*)
+        FROM email_message
+        WHERE category IS NULL
+          AND internal_date >= :received_since
+          AND NOT ('TRASH' = ANY(COALESCE(label_ids, ARRAY[]::text[])))
+        """
+    )
+    with engine.begin() as conn:
+        return int(conn.execute(q, {"received_since": received_since}).scalar() or 0)
+
+
 def count_clusters(engine) -> int:
     from sqlalchemy import text
 
@@ -116,6 +132,51 @@ def fetch_next_unlabelled(engine) -> EmailRow | None:
 
     with engine.begin() as conn:
         row = conn.execute(q).fetchone()
+
+    if row is None:
+        return None
+
+    email = _row_to_email(row)
+    return EmailRow(email=email, category=row[12], cluster_id=row[13])
+
+
+def fetch_next_unlabelled_since(
+    engine,
+    *,
+    received_since: datetime,
+) -> EmailRow | None:
+    """Return the next unlabelled email since a given timestamp."""
+
+    from sqlalchemy import text
+
+    q = text(
+        """
+        SELECT
+            gmail_message_id,
+            thread_id,
+            subject,
+            subject_normalized,
+            from_address,
+            from_domain,
+            to_addresses,
+            cc_addresses,
+            bcc_addresses,
+            is_unread,
+            internal_date,
+            label_ids,
+            category,
+            cluster_id
+        FROM email_message
+        WHERE category IS NULL
+          AND internal_date >= :received_since
+          AND NOT ('TRASH' = ANY(COALESCE(label_ids, ARRAY[]::text[])))
+        ORDER BY internal_date ASC, gmail_message_id ASC
+        LIMIT 1
+        """
+    )
+
+    with engine.begin() as conn:
+        row = conn.execute(q, {"received_since": received_since}).fetchone()
 
     if row is None:
         return None

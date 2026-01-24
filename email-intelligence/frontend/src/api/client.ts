@@ -20,6 +20,15 @@ import type {
   SyncExistenceResponse,
   TaxonomyLabel,
 } from "./types";
+import {
+  demoCheckEventCalendar,
+  demoGetFutureEvents,
+  demoGetPaymentsAnalytics,
+  demoGetPaymentsRecent,
+  demoHideEvent,
+  demoPublishEventCalendar,
+  demoUnhideEvent,
+} from "../demo/mockApi";
 
 export class ApiError extends Error {
   public readonly status: number;
@@ -35,6 +44,11 @@ export class ApiError extends Error {
 function apiBaseUrl(): string {
   // Prefer explicit env var; otherwise rely on Vite dev proxy / same-origin.
   return (import.meta as any).env?.VITE_API_BASE_URL ?? "";
+}
+
+function demoModeEnabled(): boolean {
+  const raw = (import.meta as any).env?.VITE_DEMO_MODE;
+  return String(raw ?? "").toLowerCase() === "true";
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -238,36 +252,49 @@ export const api = {
 
   // Events
   getFutureEvents: (limit: number = 200, includeHidden: boolean = false) =>
-    request<FutureEventsResponse>(
-      `/api/events/future?limit=${encodeURIComponent(String(limit))}&include_hidden=${encodeURIComponent(
-        String(includeHidden)
-      )}`
-    ),
+    demoModeEnabled()
+      ? Promise.resolve(demoGetFutureEvents(includeHidden))
+      : request<FutureEventsResponse>(
+          `/api/events/future?limit=${encodeURIComponent(
+            String(limit)
+          )}&include_hidden=${encodeURIComponent(String(includeHidden))}`
+        ),
 
   hideEvent: (messageId: number) =>
-    request<HideEventResponse>(`/api/events/${encodeURIComponent(String(messageId))}/hide`, {
-      method: "POST",
-    }),
+    demoModeEnabled()
+      ? Promise.resolve(demoHideEvent(messageId))
+      : request<HideEventResponse>(`/api/events/${encodeURIComponent(String(messageId))}/hide`, {
+          method: "POST",
+        }),
 
   unhideEvent: (messageId: number) =>
-    request<HideEventResponse>(`/api/events/${encodeURIComponent(String(messageId))}/unhide`, {
-      method: "POST",
-    }),
+    demoModeEnabled()
+      ? Promise.resolve(demoUnhideEvent(messageId))
+      : request<HideEventResponse>(`/api/events/${encodeURIComponent(String(messageId))}/unhide`, {
+          method: "POST",
+        }),
 
   checkEventCalendar: (messageId: number) =>
-    request<CalendarCheckResponse>(
-      `/api/events/${encodeURIComponent(String(messageId))}/calendar/check`,
-      { method: "POST" }
-    ),
+    demoModeEnabled()
+      ? Promise.resolve(demoCheckEventCalendar(messageId))
+      : request<CalendarCheckResponse>(
+          `/api/events/${encodeURIComponent(String(messageId))}/calendar/check`,
+          { method: "POST" }
+        ),
 
   publishEventCalendar: (messageId: number) =>
-    request<CalendarPublishResponse>(
-      `/api/events/${encodeURIComponent(String(messageId))}/calendar/publish`,
-      { method: "POST" }
-    ),
+    demoModeEnabled()
+      ? Promise.resolve(demoPublishEventCalendar(messageId))
+      : request<CalendarPublishResponse>(
+          `/api/events/${encodeURIComponent(String(messageId))}/calendar/publish`,
+          { method: "POST" }
+        ),
 
   // Payments
   getPaymentsRecent: (months: number = 3, limit: number = 200, currency?: string | null) => {
+    if (demoModeEnabled()) {
+      return Promise.resolve(demoGetPaymentsRecent(limit));
+    }
     const params = new URLSearchParams({
       months: String(months),
       limit: String(limit),
@@ -279,6 +306,9 @@ export const api = {
   },
 
   getPaymentsAnalytics: (months: number = 6, currency?: string | null) => {
+    if (demoModeEnabled()) {
+      return Promise.resolve(demoGetPaymentsAnalytics());
+    }
     const params = new URLSearchParams({
       months: String(months),
     });

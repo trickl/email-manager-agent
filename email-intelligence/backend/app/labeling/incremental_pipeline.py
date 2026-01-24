@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 
 from googleapiclient.errors import HttpError
 
@@ -21,6 +22,7 @@ from app.gmail.client import get_message_body_text
 from app.labeling.labeler import build_labeler
 from app.labeling.tier1 import validate_tier1_category
 from app.repository.email_query_repository import fetch_next_unlabelled
+from app.repository.email_query_repository import fetch_next_unlabelled_since
 from app.repository.email_query_repository import fetch_recent_domain_activity
 from app.repository.email_query_repository import insert_cluster
 from app.repository.email_query_repository import label_emails_in_cluster
@@ -62,6 +64,7 @@ def label_unlabelled_individual(
     label_version: str,
     ollama_host: str | None,
     ollama_model: str,
+    received_since: datetime | None = None,
     max_emails: int | None = None,
     progress_hook=None,
 ) -> dict[str, int]:
@@ -103,7 +106,10 @@ def label_unlabelled_individual(
         if max_emails is not None and emails_processed >= max_emails:
             break
 
-        row = fetch_next_unlabelled(engine)
+        if received_since is None:
+            row = fetch_next_unlabelled(engine)
+        else:
+            row = fetch_next_unlabelled_since(engine, received_since=received_since)
         if row is None:
             break
 

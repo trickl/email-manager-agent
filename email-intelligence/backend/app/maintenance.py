@@ -6,10 +6,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from app.clustering.pipeline import cluster_and_label
 from app.ingestion.metadata_ingestion import ingest_metadata
 from app.labeling.incremental_pipeline import label_unlabelled_individual
-from app.repository.email_query_repository import count_unlabelled
+from app.repository.email_query_repository import count_unlabelled_since
 from app.repository.event_metadata_repository import (
     list_unprocessed_messages_in_category_since,
     upsert_message_event_metadata,
@@ -22,6 +21,7 @@ from app.repository.payment_metadata_repository import (
 from app.repository.pipeline_kv_repository import (
     get_checkpoint_internal_date,
     get_retention_default_days,
+    set_checkpoint_internal_date,
 )
 from app.repository.retention_archive_repository import (
     count_pending_outbox,
@@ -584,6 +584,15 @@ def run_maintenance(
     checkpoint_before = get_checkpoint_internal_date(engine)
     if checkpoint_before is None:
         cutoff = _now_utc() - timedelta(days=fallback_days)
+        set_checkpoint_internal_date(engine, cutoff)
+        _call_progress(
+            progress_cb,
+            phase="maintenance_ingest",
+            message=(
+                "No ingest checkpoint found; limiting ingest to recent window "
+                f"(since {cutoff.date().isoformat()})"
+            ),
+        )
     else:
         cutoff = checkpoint_before
         if cutoff.tzinfo is None:
@@ -619,79 +628,55 @@ def run_maintenance(
         progress_hook=ingest_hook,
     )
 
-    total_unlabelled = count_unlabelled(engine)
+    total_unlabelled = count_unlabelled_since(engine, received_since=cutoff)
     _call_progress(
         progress_cb,
         phase="maintenance_label",
         total=int(total_unlabelled),
-        message=f"Auto-label check: {int(total_unlabelled)} unlabelled",
+        message=(
+            f"Auto-label check: {int(total_unlabelled)} unlabelled "
+            f"since {cutoff.date().isoformat()}"
+        ),
     )
 
     if total_unlabelled > 0:
-        if int(total_unlabelled) < int(label_threshold):
+        _call_progress(
+            progress_cb,
+            phase="maintenance_label",
+            message=(
+                f"Auto: labeling unlabelled emails received since "
+                f"{cutoff.date().isoformat()}"
+            ),
+        )
+
+        def label_hook(
+            *,
+            emails_processed: int,
+            emails_labeled: int,
+            emails_failed: int,
+            message: str | None,
+        ):
             _call_progress(
                 progress_cb,
                 phase="maintenance_label",
-                message=f"Auto: {total_unlabelled} < {label_threshold} → labeling individually",
+                processed=emails_labeled,
+                inserted=emails_labeled,
+                failed=emails_failed,
+                message=message,
             )
 
-            def label_hook(
-                *,
-                emails_processed: int,
-                emails_labeled: int,
-                emails_failed: int,
-                message: str | None,
-            ):
-                _call_progress(
-                    progress_cb,
-                    phase="maintenance_label",
-                    processed=emails_labeled,
-                    inserted=emails_labeled,
-                    failed=emails_failed,
-                    message=message,
-                )
-
-            label_unlabelled_individual(
-                engine=engine,
-                service=service,
-                user_id=settings.gmail_user_id,
-                similarity_threshold=settings.similarity_threshold,
-                label_version=settings.label_version,
-                ollama_host=settings.ollama_host,
-                ollama_model=settings.ollama_model,
-                max_emails=None,
-                progress_hook=label_hook,
-            )
-        else:
-            _call_progress(
-                progress_cb,
-                phase="maintenance_label",
-                message=(
-                    f"Auto: {total_unlabelled} ≥ {label_threshold} "
-                    "→ clustering + bulk labeling"
-                ),
-            )
-
-            def cluster_hook(*, clusters_done: int, emails_labeled: int, message: str | None):
-                _call_progress(
-                    progress_cb,
-                    phase="maintenance_label",
-                    processed=emails_labeled,
-                    inserted=emails_labeled,
-                    message=message,
-                )
-
-            cluster_and_label(
-                engine=engine,
-                service=service,
-                user_id=settings.gmail_user_id,
-                similarity_threshold=settings.similarity_threshold,
-                label_version=settings.label_version,
-                ollama_host=settings.ollama_host,
-                ollama_model=settings.ollama_model,
-                max_clusters=None,
-                progress_hook=cluster_hook,
-            )
+        label_unlabelled_individual(
+            engine=engine,
+            service=service,
+            user_id=settings.gmail_user_id,
+            similarity_threshold=settings.similarity_threshold,
+            label_version=settings.label_version,
+            ollama_host=settings.ollama_host,
+            ollama_model=settings.ollama_model,
+            received_since=cutoff,
+            max_emails=None,
+            progress_hook=label_hook,
+        )
 
     _push_label_outbox(
         engine=engine,

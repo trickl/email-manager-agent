@@ -2,6 +2,7 @@ import ArchiveOutlinedIcon from "@mui/icons-material/ArchiveOutlined";
 import CallMadeOutlinedIcon from "@mui/icons-material/CallMadeOutlined";
 import CallReceivedOutlinedIcon from "@mui/icons-material/CallReceivedOutlined";
 import DeleteOutlineOutlinedIcon from "@mui/icons-material/DeleteOutlineOutlined";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -9,15 +10,18 @@ import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
+import Menu from "@mui/material/Menu";
+import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
+import type { MouseEvent } from "react";
 import { useMemo, useState } from "react";
 
 import { api, ApiError } from "../api/client";
 import type { JobType } from "./useJobPolling";
 
-type ActionKey = "ingest" | "label" | "archive" | "delete";
+type ActionKey = "maintenance" | "ingest" | "label" | "archive" | "delete";
 
 export default function PrimaryActionsBar(props: {
   disabled: boolean;
@@ -27,9 +31,28 @@ export default function PrimaryActionsBar(props: {
   const [activeAction, setActiveAction] = useState<ActionKey | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
+  const menuOpen = Boolean(menuAnchorEl);
 
   const actions = useMemo(() => {
     return {
+      maintenance: {
+        title: "Run maintenance",
+        icon: <ArchiveOutlinedIcon fontSize="small" />,
+        buttonColor: "primary" as const,
+        description: (
+          <>
+            <Typography variant="body2" sx={{ mb: 1 }}>
+              Runs the full incremental maintenance pipeline: ingest, auto-label, label push,
+              retention plan + archive push, inbox aging, and event/payment extraction.
+            </Typography>
+            <Typography variant="body2">
+              This is safe and incremental. You can track progress in the header.
+            </Typography>
+          </>
+        ),
+        confirmLabel: "Run maintenance",
+      },
       ingest: {
         title: "Ingest",
         icon: <CallReceivedOutlinedIcon fontSize="small" />,
@@ -119,13 +142,23 @@ export default function PrimaryActionsBar(props: {
     setConfirmOpen(true);
   }
 
+  function openMenu(event: MouseEvent<HTMLElement>) {
+    setMenuAnchorEl(event.currentTarget);
+  }
+
+  function closeMenu() {
+    setMenuAnchorEl(null);
+  }
+
   async function runConfirmed() {
     if (!activeAction) return;
     setBusy(true);
     setError(null);
 
     try {
-      if (activeAction === "ingest") {
+      if (activeAction === "maintenance") {
+        await props.startJob("maintenance");
+      } else if (activeAction === "ingest") {
         const status = await api.getStatus();
         const hasData = (status.total_email_count ?? 0) > 0;
         await props.startJob(hasData ? "ingest_refresh" : "ingest_full");
@@ -170,10 +203,10 @@ export default function PrimaryActionsBar(props: {
       >
         <Box sx={{ minWidth: 240 }}>
           <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>
-            Actions
+            Maintenance
           </Typography>
           <Typography variant="caption" sx={{ color: "text.secondary" }}>
-            Four simple buttons. Each explains itself before running.
+            Run the full pipeline in one click. Other actions are in the menu.
           </Typography>
         </Box>
 
@@ -181,49 +214,67 @@ export default function PrimaryActionsBar(props: {
           <Button
             size="large"
             variant="contained"
-            color={actions.ingest.buttonColor}
-            startIcon={actions.ingest.icon}
-            onClick={() => openConfirm("ingest")}
+            color={actions.maintenance.buttonColor}
+            startIcon={actions.maintenance.icon}
+            onClick={() => openConfirm("maintenance")}
             disabled={props.disabled}
-            sx={{ fontWeight: 900, textTransform: "none" }}
+            sx={{ fontWeight: 900, textTransform: "none", minWidth: 200 }}
           >
-            {actions.ingest.title}
-          </Button>
-          <Button
-            size="large"
-            variant="contained"
-            color={actions.label.buttonColor}
-            startIcon={actions.label.icon}
-            onClick={() => openConfirm("label")}
-            disabled={props.disabled}
-            sx={{ fontWeight: 900, textTransform: "none" }}
-          >
-            {actions.label.title}
+            {actions.maintenance.title}
           </Button>
           <Button
             size="large"
             variant="outlined"
-            color={actions.archive.buttonColor}
-            startIcon={actions.archive.icon}
-            onClick={() => openConfirm("archive")}
+            startIcon={<MoreVertIcon fontSize="small" />}
+            onClick={openMenu}
             disabled={props.disabled}
             sx={{ fontWeight: 900, textTransform: "none" }}
           >
-            {actions.archive.title}
-          </Button>
-          <Button
-            size="large"
-            variant="outlined"
-            color={actions.delete.buttonColor}
-            startIcon={actions.delete.icon}
-            onClick={() => openConfirm("delete")}
-            disabled={props.disabled}
-            sx={{ fontWeight: 900, textTransform: "none" }}
-          >
-            {actions.delete.title}
+            More actions
           </Button>
         </Stack>
       </Stack>
+
+      <Menu
+        anchorEl={menuAnchorEl}
+        open={menuOpen}
+        onClose={closeMenu}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+      >
+        <MenuItem
+          onClick={() => {
+            closeMenu();
+            openConfirm("ingest");
+          }}
+        >
+          {actions.ingest.title}
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            closeMenu();
+            openConfirm("label");
+          }}
+        >
+          {actions.label.title}
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            closeMenu();
+            openConfirm("archive");
+          }}
+        >
+          {actions.archive.title}
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            closeMenu();
+            openConfirm("delete");
+          }}
+        >
+          {actions.delete.title}
+        </MenuItem>
+      </Menu>
 
       <Dialog open={confirmOpen} onClose={() => (busy ? null : setConfirmOpen(false))} maxWidth="sm" fullWidth>
         <DialogTitle sx={{ fontWeight: 900 }}>

@@ -7,6 +7,17 @@ This repository currently contains:
 - A **Python CLI** (`email-manager`) that builds and queries a **local, header-only** Gmail index (SQLite + FTS).
 - An **Email Intelligence** dashboard under `email-intelligence/` (FastAPI + React) that can ingest metadata into Postgres/Qdrant and run clustering + labeling using Ollama.
 
+## Purpose & vision
+
+**Purpose:** provide a safe, metadata-first way to understand and maintain an inbox with human-in-the-loop automation.
+
+**Vision (north star):**
+
+- **Metadata-first ingestion** with explicit uncertainty (never hide ambiguity).
+- **Clustering-first discovery** so users can see patterns before acting.
+- **Policy-driven automation** that is safe, auditable, reversible, and staged.
+- **Non-destructive by default** with clear retention and inbox hygiene workflows.
+
 ## Important notice: personal use, privacy & liability
 
 This project was created for **personal use** and is provided **“as is”**, without warranty of any kind.
@@ -47,6 +58,9 @@ Below is the (optional) Email Intelligence dashboard UI included under `email-in
 - 🧭 **Explorable hierarchy** (category → subcategory → cluster → sender) with a tree + sunburst
 - 🧪 **Job runner** endpoints with live progress streaming (SSE)
 - 🗂️ **Message samples** for a selected node (metadata only)
+- 🗓️ **Event extraction** (tickets/bookings) with Calendar status + publish controls
+- 💳 **Financial insights** with payment extraction, vendor/category breakdowns, and recurring analysis
+- 🧹 **Inbox maintenance** pipeline (incremental ingest, label push, retention archive, inbox aging)
 
 ### Not implemented (yet)
 
@@ -161,6 +175,34 @@ email-manager index stats
 ### Running the Email Intelligence dashboard
 
 See `email-intelligence/` for the full stack (FastAPI + Postgres + Qdrant + React UI).
+
+Quick start (local dev):
+
+```bash
+# 1) Start Postgres + Qdrant
+cd email-intelligence/docker
+docker compose up -d
+
+# 2) Backend
+cd ../backend
+cp .env.example .env
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+PYTHONPATH=$PWD python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+
+# 3) Frontend
+cd ../frontend
+cp .env.example .env
+npm install
+npm run dev
+```
+
+Demo mode (safe screenshots):
+
+```bash
+# In email-intelligence/frontend/.env
+VITE_DEMO_MODE=true
+```
 
 ## Development
 
